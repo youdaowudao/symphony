@@ -1,64 +1,32 @@
 # Symphony Elixir
 
-This directory contains the Elixir agent orchestration service that polls Linear, creates per-issue workspaces, and runs Codex in app-server mode.
+这个目录包含 Elixir agent orchestration service：它会轮询 Linear、为每个 issue 创建独立 workspace，并以 app-server 模式运行 Codex。
 
-## Environment
+## 环境
 
 - Elixir: `1.19.x` (OTP 28) via `mise`.
-- Install deps: `mix setup`.
-- Main quality gate: `make all` (format check, lint, coverage, dialyzer).
+- 安装依赖：`mix setup`。
 
 
-## Codebase-Specific Conventions
+## Codebase 专用约定
 
-- Runtime config is loaded from `WORKFLOW.md` front matter via `SymphonyElixir.Workflow` and `SymphonyElixir.Config`.
-- Keep the implementation aligned with [`../SPEC.md`](../SPEC.md) where practical.
-  - The implementation may be a superset of the spec.
-  - The implementation must not conflict with the spec.
-  - If implementation changes meaningfully alter the intended behavior, update the spec in the same
-    change where practical so the spec stays current.
-- Prefer adding config access through `SymphonyElixir.Config` instead of ad-hoc env reads.
-- Workspace safety is critical:
-  - Never run Codex turn cwd in source repo.
-  - Workspaces must stay under configured workspace root.
-- Orchestrator behavior is stateful and concurrency-sensitive; preserve retry, reconciliation, and cleanup semantics.
-- Follow `docs/logging.md` for logging conventions and required issue/session context fields.
+- Runtime config 通过 `SymphonyElixir.Workflow` 和 `SymphonyElixir.Config` 从 `WORKFLOW.md` front matter 加载。
+- 优先通过 `SymphonyElixir.Config` 增加配置访问，不要随手做 ad-hoc env 读取。
+- Workspace 安全很关键：
+  - 不要在 source repo 里运行 Codex turn cwd。
+  - Workspaces 必须始终位于已配置的 workspace root 下。
+- Orchestrator 行为有状态且对并发敏感；要保持 retry、reconciliation 和 cleanup 语义不被破坏。
+- 日志约定和必须带上的 issue/session context 字段，遵循 `docs/logging.md`。
 
-## Tests and Validation
+## 必须遵守的规则
 
-Run targeted tests while iterating, then run full gates before handoff.
+- `lib/` 里的 public functions（`def`）必须紧邻一个 `@spec`。
+- `defp` 的 spec 是可选的。
+- 带 `@impl` 的 callback implementation 不受本地 `@spec` 要求约束。
+- 遵循 `lib/symphony_elixir/*` 现有的 module/style patterns。
 
-```bash
-make all
-```
-
-## Required Rules
-
-- Public functions (`def`) in `lib/` must have an adjacent `@spec`.
-- `defp` specs are optional.
-- `@impl` callback implementations are exempt from local `@spec` requirement.
-- Keep changes narrowly scoped; avoid unrelated refactors.
-- Follow existing module/style patterns in `lib/symphony_elixir/*`.
-
-Validation command:
+校验命令：
 
 ```bash
 mix specs.check
 ```
-
-## PR Requirements
-
-- PR body must follow `../.github/pull_request_template.md` exactly.
-- Validate PR body locally when needed:
-
-```bash
-mix pr_body.check --file /path/to/pr_body.md
-```
-
-## Docs Update Policy
-
-If behavior/config changes, update docs in the same PR:
-
-- `../README.md` for project concept and goals.
-- `README.md` for Elixir implementation and run instructions.
-- `WORKFLOW.md` for workflow/config contract changes.

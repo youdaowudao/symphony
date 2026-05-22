@@ -1,64 +1,51 @@
 # Symphony Elixir
 
-This directory contains the current Elixir/OTP implementation of Symphony, based on
-[`SPEC.md`](../SPEC.md) at the repository root.
+此目录包含当前基于仓库根目录中 [`SPEC.md`](../SPEC.md) 的 Symphony Elixir/OTP 实现。
 
 > [!WARNING]
-> Symphony Elixir is prototype software intended for evaluation only and is presented as-is.
-> We recommend implementing your own hardened version based on `SPEC.md`.
+> Symphony Elixir 是仅用于评估的原型软件，按原样提供。
+> 我们建议你基于 `SPEC.md` 实现自己的强化版本。
 
-## Screenshot
+## 截图
 
-![Symphony Elixir screenshot](../.github/media/elixir-screenshot.png)
+![Symphony Elixir 截图](../.github/media/elixir-screenshot.png)
 
-## How it works
+## 工作方式
 
-1. Polls Linear for candidate work
-2. Creates a workspace per issue
-3. Launches Codex in [App Server mode](https://developers.openai.com/codex/app-server/) inside the
-   workspace
-4. Sends a workflow prompt to Codex
-5. Keeps Codex working on the issue until the work is done
+1. 轮询 Linear 中的候选工作
+2. 为每个事项创建一个 workspace
+3. 在该 workspace 内以 [App Server mode](https://developers.openai.com/codex/app-server/) 启动 Codex
+4. 向 Codex 发送 workflow prompt
+5. 持续让 Codex 处理该事项，直到工作完成
 
-During app-server sessions, Symphony also serves a client-side `linear_graphql` tool so that repo
-skills can make raw Linear GraphQL calls.
+在 app-server 会话期间，Symphony 还会提供一个客户端侧的 `linear_graphql` 工具，使 repo skills 能够发起原始 Linear GraphQL 调用。
 
-If a claimed issue moves to a terminal state (`Done`, `Closed`, `Cancelled`, or `Duplicate`),
-Symphony stops the active agent for that issue and cleans up matching workspaces.
+如果一个已领取的事项进入终止状态（`Done`、`Closed`、`Cancelled` 或 `Duplicate`），Symphony 会停止该事项的活跃 agent，并清理匹配的 workspaces。
 
-If Codex reports that operator input, approval, or MCP elicitation is required, Symphony keeps the
-issue claimed and exposes it as blocked in the runtime state, JSON API, and dashboard. Blocked
-entries are in memory only; restarting the orchestrator clears that blocked map, so any still-active
-Linear issue can become a dispatch candidate again after restart.
+如果 Codex 报告需要 operator input、approval 或 MCP elicitation，Symphony 会保持该事项的 claimed 状态，并在 runtime state、JSON API 和 dashboard 中将其显示为 blocked。Blocked 条目只保存在内存中；重启 orchestrator 会清空该 blocked map，因此任何仍然活跃的 Linear 事项在重启后都可能再次成为 dispatch candidate。
 
-## How to use it
+## 使用方法
 
-1. Make sure your codebase is set up to work well with agents: see
-   [Harness engineering](https://openai.com/index/harness-engineering/).
-2. Get a new personal token in Linear via Settings → Security & access → Personal API keys, and
-   set it as the `LINEAR_API_KEY` environment variable.
-3. Copy this directory's `WORKFLOW.md` to your repo.
-4. Optionally copy the `commit`, `push`, `pull`, `land`, and `linear` skills to your repo.
-   - The `linear` skill expects Symphony's `linear_graphql` app-server tool for raw Linear GraphQL
-     operations such as comment editing or upload flows.
-5. Customize the copied `WORKFLOW.md` file for your project.
-   - To get your project's slug, right-click the project and copy its URL. The slug is part of the
-     URL.
-   - When creating a workflow based on this repo, note that it depends on non-standard Linear
-     issue statuses: "Rework", "Human Review", and "Merging". You can customize them in
-     Team Settings → Workflow in Linear.
-6. Follow the instructions below to install the required runtime dependencies and start the service.
+1. 确保你的 codebase 已经设置为适合 agents 工作：参见 [Harness engineering](https://openai.com/index/harness-engineering/)。
+2. 在 Linear 中通过 Settings → Security & access → Personal API keys 获取一个新的 personal token，并将其设置为 `LINEAR_API_KEY` 环境变量。
+3. 将此目录中的 `WORKFLOW.md` 复制到你的 repo。
+4. 可选：将 `commit`、`push`、`pull`、`land` 和 `linear` skills 复制到你的 repo。
+   - `linear` skill 需要 Symphony 的 `linear_graphql` app-server tool，用于执行原始 Linear GraphQL 操作，例如 comment editing 或 upload flows。
+5. 为你的项目自定义复制后的 `WORKFLOW.md` 文件。
+   - 要获取项目的 slug，请右键点击该 project 并复制其 URL。slug 是 URL 的一部分。
+   - 基于此 repo 创建 workflow 时，请注意它依赖非标准 Linear issue statuses："Rework"、"Human Review" 和 "Merging"。你可以在 Linear 的 Team Settings → Workflow 中自定义它们。
+6. 按照下面的说明安装所需的 runtime dependencies 并启动服务。
 
-## Prerequisites
+## 前置条件
 
-We recommend using [mise](https://mise.jdx.dev/) to manage Elixir/Erlang versions.
+我们推荐使用 [mise](https://mise.jdx.dev/) 管理 Elixir/Erlang 版本。
 
 ```bash
 mise install
 mise exec -- elixir --version
 ```
 
-## Run
+## 运行
 
 ```bash
 git clone https://github.com/openai/symphony
@@ -70,25 +57,24 @@ mise exec -- mix build
 mise exec -- ./bin/symphony ./WORKFLOW.md
 ```
 
-## Configuration
+## 配置
 
-Pass a custom workflow file path to `./bin/symphony` when starting the service:
+启动服务时，可以向 `./bin/symphony` 传入自定义 workflow 文件路径：
 
 ```bash
 ./bin/symphony /path/to/custom/WORKFLOW.md
 ```
 
-If no path is passed, Symphony defaults to `./WORKFLOW.md`.
+如果未传入路径，Symphony 默认使用 `./WORKFLOW.md`。
 
-Optional flags:
+可选 flags：
 
-- `--logs-root` tells Symphony to write logs under a different directory (default: `./log`)
-- `--port` also starts the Phoenix observability service (default: disabled)
+- `--logs-root` 告诉 Symphony 将 logs 写入另一个目录（默认：`./log`）
+- `--port` 同时启动 Phoenix observability service（默认：disabled）
 
-The `WORKFLOW.md` file uses YAML front matter for configuration, plus a Markdown body used as the
-Codex session prompt.
+`WORKFLOW.md` 文件使用 YAML front matter 进行配置，并使用 Markdown body 作为 Codex session prompt。
 
-Minimal example:
+最小示例：
 
 ```md
 ---
@@ -112,31 +98,23 @@ You are working on a Linear issue {{ issue.identifier }}.
 Title: {{ issue.title }} Body: {{ issue.description }}
 ```
 
-Notes:
+说明：
 
-- If a value is missing, defaults are used.
-- Safer Codex defaults are used when policy fields are omitted:
+- 如果某个值缺失，会使用 defaults。
+- 当 policy fields 被省略时，会使用更安全的 Codex defaults：
   - `codex.approval_policy` defaults to `{"reject":{"sandbox_approval":true,"rules":true,"mcp_elicitations":true}}`
   - `codex.thread_sandbox` defaults to `workspace-write`
   - `codex.turn_sandbox_policy` defaults to a `workspaceWrite` policy rooted at the current issue workspace
-- Supported `codex.approval_policy` values depend on the targeted Codex app-server version. In the current local Codex schema, string values include `untrusted`, `on-failure`, `on-request`, and `never`, and object-form `reject` is also supported.
-- Supported `codex.thread_sandbox` values: `read-only`, `workspace-write`, `danger-full-access`.
-- When `codex.turn_sandbox_policy` is set explicitly, Symphony passes the map through to Codex
-  unchanged. Compatibility then depends on the targeted Codex app-server version rather than local
-  Symphony validation.
-- `agent.max_turns` caps how many back-to-back Codex turns Symphony will run in a single agent
-  invocation when a turn completes normally but the issue is still in an active state. Default: `20`.
-- If the Markdown body is blank, Symphony uses a default prompt template that includes the issue
-  identifier, title, and body.
-- Use `hooks.after_create` to bootstrap a fresh workspace. For a Git-backed repo, you can run
-  `git clone ... .` there, along with any other setup commands you need.
-- If a hook needs `mise exec` inside a freshly cloned workspace, trust the repo config and fetch
-  the project dependencies in `hooks.after_create` before invoking `mise` later from other hooks.
-- `tracker.api_key` reads from `LINEAR_API_KEY` when unset or when value is `$LINEAR_API_KEY`.
-- For path values, `~` is expanded to the home directory.
-- For env-backed path values, use `$VAR`. `workspace.root` resolves `$VAR` before path handling,
-  while `codex.command` stays a shell command string and any `$VAR` expansion there happens in the
-  launched shell.
+- 支持的 `codex.approval_policy` 值取决于目标 Codex app-server 版本。在当前本地 Codex schema 中，字符串值包括 `untrusted`、`on-failure`、`on-request` 和 `never`，并且也支持 object-form `reject`。
+- 支持的 `codex.thread_sandbox` 值：`read-only`、`workspace-write`、`danger-full-access`。
+- 当显式设置 `codex.turn_sandbox_policy` 时，Symphony 会将该 map 原样传递给 Codex。兼容性随后取决于目标 Codex app-server 版本，而不是本地 Symphony validation。
+- `agent.max_turns` 限制在单次 agent invocation 中 Symphony 连续运行的 Codex turns 数量；前提是某个 turn 正常完成但该事项仍处于 active state。默认值：`20`。
+- 如果 Markdown body 为空，Symphony 会使用包含 issue identifier、title 和 body 的默认 prompt template。
+- 使用 `hooks.after_create` 引导一个全新的 workspace。对于 Git-backed repo，你可以在那里运行 `git clone ... .`，以及你需要的任何其他 setup commands。
+- 如果某个 hook 需要在 freshly cloned workspace 内执行 `mise exec`，请在后续其他 hooks 调用 `mise` 之前，先在 `hooks.after_create` 中 trust repo config 并获取 project dependencies。
+- 当 `tracker.api_key` 未设置或值为 `$LINEAR_API_KEY` 时，会从 `LINEAR_API_KEY` 读取。
+- 对于 path values，`~` 会展开为 home directory。
+- 对于 env-backed path values，请使用 `$VAR`。`workspace.root` 会先解析 `$VAR` 再处理 path，而 `codex.command` 保持为 shell command string，其中任何 `$VAR` expansion 都会发生在 launched shell 中。
 
 ```yaml
 tracker:
@@ -150,36 +128,33 @@ codex:
   command: "$CODEX_BIN --config 'model=\"gpt-5.5\"' app-server"
 ```
 
-- If `WORKFLOW.md` is missing or has invalid YAML at startup, Symphony does not boot.
-- If a later reload fails, Symphony keeps running with the last known good workflow and logs the
-  reload error until the file is fixed.
-- `server.port` or CLI `--port` enables the optional Phoenix LiveView dashboard and JSON API at
-  `/`, `/api/v1/state`, `/api/v1/<issue_identifier>`, and `/api/v1/refresh`.
+- 如果 `WORKFLOW.md` 缺失或启动时存在 invalid YAML，Symphony 不会 boot。
+- 如果之后的 reload 失败，Symphony 会继续使用最后一个 known good workflow 运行，并记录 reload error，直到该文件被修复。
+- `server.port` 或 CLI `--port` 会启用可选的 Phoenix LiveView dashboard 和 JSON API，地址包括 `/`、`/api/v1/state`、`/api/v1/<issue_identifier>` 和 `/api/v1/refresh`。
 
 ## Web dashboard
 
-The observability UI now runs on a minimal Phoenix stack:
+observability UI 现在运行在一个最小 Phoenix stack 上：
 
-- LiveView for the dashboard at `/`
-- JSON API for operational debugging under `/api/v1/*`
-- Bandit as the HTTP server
-- Phoenix dependency static assets for the LiveView client bootstrap
+- dashboard 位于 `/`，使用 LiveView
+- operational debugging 的 JSON API 位于 `/api/v1/*`
+- 使用 Bandit 作为 HTTP server
+- 使用 Phoenix dependency static assets 进行 LiveView client bootstrap
 
-## Project Layout
+## 项目布局
 
-- `lib/`: application code and Mix tasks
-- `test/`: ExUnit coverage for runtime behavior
-- `WORKFLOW.md`: in-repo workflow contract used by local runs
-- `../.codex/`: repository-local Codex skills and setup helpers
+- `lib/`：application code 和 Mix tasks
+- `test/`：runtime behavior 的 ExUnit coverage
+- `WORKFLOW.md`：local runs 使用的 in-repo workflow contract
+- `../.codex/`：repository-local Codex skills 和 setup helpers
 
-## Testing
+## 测试
 
 ```bash
 make all
 ```
 
-Run the real external end-to-end test only when you want Symphony to create disposable Linear
-resources and launch a real `codex app-server` session:
+只有当你希望 Symphony 创建一次性 Linear resources 并启动真实的 `codex app-server` 会话时，才运行真实的 external end-to-end test：
 
 ```bash
 cd elixir
@@ -187,40 +162,31 @@ export LINEAR_API_KEY=...
 make e2e
 ```
 
-Optional environment variables:
+可选 environment variables：
 
 - `SYMPHONY_LIVE_LINEAR_TEAM_KEY` defaults to `SYME2E`
-- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` uses those SSH hosts when set, as a comma-separated list
+- `SYMPHONY_LIVE_SSH_WORKER_HOSTS` 在设置时使用这些 SSH hosts，格式为 comma-separated list
 
-`make e2e` runs two live scenarios:
-- one with a local worker
-- one with SSH workers
+`make e2e` 会运行两个 live scenarios：
+- 一个使用 local worker
+- 一个使用 SSH workers
 
-If `SYMPHONY_LIVE_SSH_WORKER_HOSTS` is unset, the SSH scenario uses `docker compose` to start two
-disposable SSH workers on `localhost:<port>`. The live test generates a temporary SSH keypair,
-mounts the host `~/.codex/auth.json` into each worker, verifies that Symphony can talk to them
-over real SSH, then runs the same orchestration flow against those worker addresses. This keeps
-the transport representative without depending on long-lived external machines.
+如果未设置 `SYMPHONY_LIVE_SSH_WORKER_HOSTS`，SSH scenario 会使用 `docker compose` 在 `localhost:<port>` 启动两个一次性 SSH workers。live test 会生成临时 SSH keypair，将 host `~/.codex/auth.json` mount 到每个 worker 中，验证 Symphony 能够通过真实 SSH 与它们通信，然后针对这些 worker addresses 运行相同的 orchestration flow。这样可以保持 transport 的代表性，同时不依赖长期存在的 external machines。
 
-Set `SYMPHONY_LIVE_SSH_WORKER_HOSTS` if you want `make e2e` to target real SSH hosts instead.
+如果你希望 `make e2e` 目标指向真实 SSH hosts，请设置 `SYMPHONY_LIVE_SSH_WORKER_HOSTS`。
 
-The live test creates a temporary Linear project and issue, writes a temporary `WORKFLOW.md`, runs
-a real agent turn, verifies the workspace side effect, requires Codex to comment on and close the
-Linear issue, then marks the project completed so the run remains visible in Linear.
+live test 会创建一个临时 Linear project 和 issue，写入临时 `WORKFLOW.md`，运行一次真实 agent turn，验证 workspace side effect，要求 Codex 在 Linear issue 上 comment 并 close，然后将 project 标记为 completed，使该 run 在 Linear 中保持可见。
 
 ## FAQ
 
-### Why Elixir?
+### 为什么是 Elixir？
 
-Elixir is built on Erlang/BEAM/OTP, which is great for supervising long-running processes. It has an
-active ecosystem of tools and libraries. It also supports hot code reloading without stopping
-actively running subagents, which is very useful during development.
+Elixir 构建在 Erlang/BEAM/OTP 之上，非常适合 supervising long-running processes。它有活跃的 tools 和 libraries 生态。它还支持 hot code reloading，而无需停止正在活跃运行的 subagents，这在开发期间非常有用。
 
-### What's the easiest way to set this up for my own codebase?
+### 为我自己的 codebase 设置它，最简单的方式是什么？
 
-Launch `codex` in your repo, give it the URL to the Symphony repo, and ask it to set things up for
-you.
+在你的 repo 中启动 `codex`，把 Symphony repo 的 URL 给它，并让它替你完成设置。
 
 ## License
 
-This project is licensed under the [Apache License 2.0](../LICENSE).
+此项目基于 [Apache License 2.0](../LICENSE) 授权。
