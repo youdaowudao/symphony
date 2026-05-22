@@ -29,7 +29,7 @@
 - `WORKFLOW.md` 和 `AGENTS.md` 不再各自展开完整测试制度，只保留运行期必须看到的短入口。
 - PR create/update 前，按 `elixir/TESTING.md` 选择并通过当前 `Next Push Gate`。
 - 开发阶段默认只用 targeted tests；`make all` 不是默认开发命令，也不是复现工具。
-- 所有测试命令都必须显式带上 `SYMPHONY_TEST_MAX_CASES`；默认 `4`。
+- 所有测试命令都必须显式带上 `SYMPHONY_TEST_MAX_CASES`；默认测试并发上限为 `4`，这不是本机线程上限。
 - 凡是涉及 `Port.open`、`ssh`、`codex app-server`、Docker 或 fake workers 的测试，都必须显式启动并显式 cleanup。
   
   
