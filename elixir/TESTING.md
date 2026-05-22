@@ -14,6 +14,7 @@
 - `make all` 不是默认开发命令，也不是复现工具。
 - 纯文档、只读调查或 Linear triage/cleanup：开发阶段不要求跑测试；但在 PR create/update push 前，仍要执行选中的 `Next Push Gate`。
 - 局部代码改动：运行能直接覆盖被修改行为的 targeted tests。
+- 新增或修改测试时，先主动收口噪音：优先复用公共 helper，等待、轮询和 cleanup 不要散写在单个测试正文里。
 
 ## Gate 路由级别
 

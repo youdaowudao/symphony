@@ -73,6 +73,10 @@ Instructions:
 
 只在提供的 repository copy 中工作。不要触碰任何其他 path。
 
+- 测试与校验统一遵循 `elixir/TESTING.md`；先走最小可证明路径，只有命中当前 `Next Push Gate` 时才升级。
+- 变更推进统一遵循 `elixir/CHANGE_FLOW.md`；代码变更的独立 `final zero-context reviewer`、PR create/update、GitHub 关键写操作和 `auto-merge first` 都按该文件执行。
+- 任何 `push` / create PR / update PR / merge 前，先按 `elixir/CHANGE_FLOW.md` 判断当前阶段，再按 `elixir/TESTING.md` 执行对应 gate；不要自行把普通 `elixir/` 改动或 `app-touching` 默认升级为 `make all`、浏览器验证或其他高等级路径。
+
 ## 前置条件：Linear MCP 或 `linear_graphql` tool 可用
 
 Agent 应该能够与 Linear 通信，要么通过已配置的 Linear MCP server，要么通过注入的 `linear_graphql` tool。如果两者都不存在，停止并要求用户配置 Linear。
@@ -211,25 +215,17 @@ Agent 应该能够与 Linear 通信，要么通过已配置的 Linear MCP server
     - 当有助于提升 confidence 时，可以进行 temporary local proof edits 来验证 assumptions，例如为 `make` 临时修改 local build input，或 hardcode 一个 UI account / response path。
     - 在 commit/push 前 revert 所有 temporary proof edits。
     - 在 workpad 的 `Validation`/`Notes` sections 中记录这些 temporary proof steps 和 outcomes，方便 reviewers 跟随 evidence。
-    - 如果 app-touching，运行 `launch-app` validation，并在 handoff 前通过 `github-pr-media` capture/upload media。
+    - 只有 ticket 明确要求 UI/runtime/browser 证据时才执行。
 6.  重新检查所有 acceptance criteria，并关闭所有 gaps。
-7.  每次尝试 `git push` 前，运行 scope 所需 validation 并确认通过；如果失败，处理 issues 并重跑直到 green，然后 commit 并 push changes。
-8.  将 PR URL attach 到 issue（优先 attachment；如果 attachment 不可用，才使用 workpad comment）。
-    - 确保 GitHub PR 拥有 `symphony` label（缺失则添加）。
-9.  将 latest `origin/main` merge 到 branch，解决 conflicts，并重新运行 checks。
-10. 更新 workpad comment，包含 final checklist status 和 validation notes。
+7.  每次尝试 `git push` 前，运行 scope 所需 validation 并确认通过；如果高等级验证失败后的修复引入新代码变化，先回到最小 proof / targeted tests 和当前 diff 所需 review，再回到更高等级 gate。
+8.  create/update PR 成功后，后续 GitHub 关键写操作按 `elixir/CHANGE_FLOW.md` 执行，并先尝试 auto-merge。
+9.  更新 workpad comment，包含 final checklist status 和 validation notes。
     - 将已完成的 plan/acceptance/validation checklist items 标记为 checked。
     - 在同一个 workpad comment 中添加 final handoff notes（commit + validation summary）。
     - 不要在 workpad comment 中包含 PR URL；PR linkage 应保留在 issue attachment/link fields。
     - 当 task execution 中有任何不清楚/令人困惑的部分时，在底部添加一个简短的 `### Confusions` section，使用 concise bullets。
     - 不要发布任何额外 completion summary comment。
-11. 移动到 `Human Review` 前，poll PR feedback 和 checks：
-    - 读取 PR `Manual QA Plan` comment（如存在），并用它强化当前 change 的 UI/runtime test coverage。
-    - 运行完整 PR feedback sweep protocol。
-    - 确认 PR checks 在 latest changes 后 passing（green）。
-    - 确认所有 required ticket-provided validation/test-plan items 都在 workpad 中明确标记为 complete。
-    - 重复 check-address-verify loop，直到没有 outstanding comments 且 checks 全部 passing。
-    - state transition 前重新打开并 refresh workpad，使 `Plan`、`Acceptance Criteria` 和 `Validation` 与 completed work 精确一致。
+11. 进入 `Human Review` 前，按 `elixir/CHANGE_FLOW.md` 完成当前阶段要求的 review 与验证，不在 `WORKFLOW.md` 里重复展开。
 12. 只有在此之后，才将 issue 移动到 `Human Review`。
     - Exception：如果按 blocked-access escape hatch 被缺失 required non-GitHub tools/auth 阻塞，则带着 blocker brief 和 explicit unblock actions 移动到 `Human Review`。
 13. 对于 kickoff 时已有 PR attached 的 `Todo` tickets：

@@ -6,7 +6,7 @@
 2. [SPEC.md](../SPEC.md)
 3. [docs/governance/README.md](./governance/README.md)
 4. [docs/initiatives/README.md](./initiatives/README.md)
-5. [docs/changes/README.md](./changes/README.md)
+5. [docs/superpowers/README.md](./superpowers/README.md)
 6. [docs/incidents/README.md](./incidents/README.md)
 7. [elixir/README.md](../elixir/README.md)
 
@@ -14,7 +14,7 @@
 
 - 总体系统规格：`SPEC.md`
 - 长期主题、阶段规划、长期合同：`docs/initiatives/`
-- 单次高风险变更：`docs/changes/`
+- Superpowers 设计 / 计划 / 验证 / 任务：`docs/superpowers/`
 - 事故与事故级复核：`docs/incidents/`
 - 文档治理规则与模板：`docs/governance/`
 - 参考实现：`elixir/`
@@ -24,7 +24,7 @@
 当前仓库已启用：
 
 1. `docs/governance/`
-2. `docs/changes/`
+2. `docs/superpowers/`
 3. `docs/incidents/`
 4. `docs/initiatives/`
 5. `elixir/`
@@ -43,7 +43,7 @@
 - [docs/initiatives/README.md](./initiatives/README.md)
 - [docs/initiatives/SPEC/需求阶段分析详细要求.md](./initiatives/SPEC/需求阶段分析详细要求.md)
 
-### 变更与事故
+### Superpowers 与事故
 
-- [docs/changes/README.md](./changes/README.md)
+- [docs/superpowers/README.md](./superpowers/README.md)
 - [docs/incidents/README.md](./incidents/README.md)
