@@ -18,5 +18,5 @@
 
 #### Test Plan
 
-- [ ] `make -C elixir all`
+- [ ] 按 `elixir/TESTING.md` 选择当前适用的 gate，并填写实际命令
 - [ ] <!-- Additional targeted checks (list below) -->

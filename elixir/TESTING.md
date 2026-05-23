@@ -14,6 +14,7 @@
 - `make all` 不是默认开发命令，也不是复现工具。
 - 纯文档、只读调查或 Linear triage/cleanup：开发阶段不要求跑测试；但在 PR create/update push 前，仍要执行选中的 `Next Push Gate`。
 - 局部代码改动：运行能直接覆盖被修改行为的 targeted tests。
+- 新增或修改测试时，先主动收口噪音：优先复用公共 helper，等待、轮询和 cleanup 不要散写在单个测试正文里。
 
 ## Gate 路由级别
 
@@ -84,7 +85,7 @@
 ## 并发与资源压力
 
 - 本地 ExUnit 并发必须始终显式限制。所有测试命令都必须带 `SYMPHONY_TEST_MAX_CASES`。
-- 默认使用 `SYMPHONY_TEST_MAX_CASES=4`；如果机器出现压力，就降到 `2`；如果仍不稳定，就降到 `1`。
+- 默认使用 `SYMPHONY_TEST_MAX_CASES=4` 作为测试并发上限，不是本机线程上限；如果机器出现压力，就降到 `2`；如果仍不稳定，就降到 `1`。
 - 对 heavy tests 和 `make all`，必须监控 memory 增长、swap 增长、无法恢复的 CPU 饱和、异常的 subprocess/port/worker 增长，以及系统卡顿或失去响应的迹象。
 - 如果监控显示资源压力，立即停止当前 heavy test，清理现场，把并发从 `4` 降到 `2`，必要时再降到 `1`；如果 `1` 仍然不稳定，就停止并提交报告。
 

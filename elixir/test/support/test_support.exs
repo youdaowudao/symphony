@@ -22,7 +22,14 @@ defmodule SymphonyElixir.TestSupport do
       alias SymphonyElixir.Workspace
 
       import SymphonyElixir.TestSupport,
-        only: [write_workflow_file!: 1, write_workflow_file!: 2, restore_env: 2, stop_default_http_server: 0]
+        only: [
+          write_workflow_file!: 1,
+          write_workflow_file!: 2,
+          restore_env: 2,
+          stop_default_http_server: 0,
+          assert_poll_received!: 0,
+          assert_poll_received!: 1
+        ]
 
       setup do
         workflow_root =
@@ -68,6 +75,12 @@ defmodule SymphonyElixir.TestSupport do
 
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
+
+  defmacro assert_poll_received!(timeout \\ 1_100) do
+    quote do
+      assert_receive :poll, unquote(timeout)
+    end
+  end
 
   def stop_default_http_server do
     case Enum.find(Supervisor.which_children(SymphonyElixir.Supervisor), fn

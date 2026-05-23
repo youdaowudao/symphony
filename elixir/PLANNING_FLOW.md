@@ -141,7 +141,7 @@
 
 默认动作：
 
-- 默认必须有 `1` 个独立文档 reviewer
+- 默认必须有 `1` 个 fresh zero-context 独立文档 reviewer
 - 这不是红蓝对抗，也不是多角色链条
 - reviewer 只负责检查：
   - 目标是否写清楚
@@ -163,7 +163,7 @@
 
 默认动作：
 
-- 默认引入 `2` 个独立视角
+- 默认引入 `2` 个 fresh zero-context 独立视角
 - 推荐形式：轻量红蓝
   - `1` 个偏正向收敛视角
   - `1` 个偏反向挑战视角
@@ -223,7 +223,7 @@ Level 3 的红队至少要问：
 
 - `Level 0` 文档：可直接写完，不强制 reviewer。
 - `Level 1` 文档：主 agent 先做轻量反查；若仍有关键不确定项，升级到 `Level 2`。
-- `Level 2` 文档：写完后必须经过 `1` 个独立文档 reviewer，review 通过后，才可作为稳定开发依据。
+- `Level 2` 文档：写完后必须经过 `1` 个 fresh zero-context 独立文档 reviewer，review 通过后，才可作为稳定开发依据。
 - `Level 3` 文档：写完后必须经过 `2` 个独立视角复核，按轻量红蓝方式收敛后，才可作为稳定开发依据。
 - `Level 4` 文档：在 `Level 3` 基础上增加一次失败预演，不作为常规默认路径。
 
@@ -234,13 +234,13 @@ Level 3 的红队至少要问：
 - 默认最小外部视角要求如下：
   - `Level 0`：`0` 个子代理
   - `Level 1`：`0` 个外部子代理；只允许主 agent 做轻量反查
-  - `Level 2`：默认 `1` 个 fresh 独立 reviewer
-  - `Level 3`：默认 `2` 个 fresh 独立外部视角，进入轻量红蓝
-  - `Level 4`：沿用 `Level 3` 的 `2` 个 fresh 外部视角，并增加一次 premortem；不默认继续扩人
+  - `Level 2`：默认 `1` 个 fresh zero-context 独立 reviewer
+  - `Level 3`：默认 `2` 个 fresh zero-context 独立外部视角，进入轻量红蓝
+  - `Level 4`：沿用 `Level 3` 的 `2` 个 fresh zero-context 外部视角，并增加一次 premortem；不默认继续扩人
   - `Level 5`：按 `discussion-levels` 技能要求的中立裁决式流程执行
 - 主 agent 不得把自问自答包装成独立 review 或红蓝对抗。
 - 同一 round 内，不得复用同一个子代理同时扮演两个对立立场。
-- 采用 `Independent Second Opinion`、`Devil's Advocate`、红蓝或 premortem 时，至少要有 `1` 个外部分析子代理；如果方法本身要求对立视角，则至少要有 `2` 个 fresh 独立外部视角，或 `1` 个外部对立视角加主 agent 裁决。
+- 采用 `Independent Second Opinion`、`Devil's Advocate`、红蓝或 premortem 时，至少要有 `1` 个 fresh zero-context 外部分析子代理；如果方法本身要求对立视角，则至少要有 `2` 个 fresh zero-context 独立外部视角，或 `1` 个 fresh zero-context 外部对立视角加主 agent 裁决。
 
 ## 文档 review 的通过标准
 
