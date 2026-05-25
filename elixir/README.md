@@ -87,7 +87,7 @@ hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 20
   max_turns: 20
 codex:
   command: codex app-server

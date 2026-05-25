@@ -4,6 +4,7 @@ defmodule SymphonyElixir.Config do
   """
 
   alias SymphonyElixir.Config.Schema
+  alias SymphonyElixir.ProjectRegistry
   alias SymphonyElixir.Workflow
 
   @default_prompt_template """
@@ -125,11 +126,23 @@ defmodule SymphonyElixir.Config do
       settings.tracker.kind == "linear" and not is_binary(settings.tracker.api_key) ->
         {:error, :missing_linear_api_token}
 
-      settings.tracker.kind == "linear" and not is_binary(settings.tracker.project_slug) ->
-        {:error, :missing_linear_project_slug}
+      settings.tracker.kind == "linear" ->
+        validate_linear_registry_semantics(settings)
 
       true ->
         :ok
+    end
+  end
+
+  defp validate_linear_registry_semantics(settings) do
+    case ProjectRegistry.load_normalized(
+           ProjectRegistry.default_path(),
+           ProjectRegistry.normalize_legacy_project_slug(settings.tracker.project_slug)
+         ) do
+      {:ok, {:registry, _entries}} -> :ok
+      {:ok, {:legacy, _entries}} -> :ok
+      :missing -> {:error, :missing_linear_project_slug}
+      {:error, reason} -> {:error, reason}
     end
   end
 

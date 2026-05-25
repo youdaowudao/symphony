@@ -23,6 +23,8 @@ defmodule SymphonyElixir.TestSupport do
 
       import SymphonyElixir.TestSupport,
         only: [
+          write_project_registry_file!: 1,
+          write_project_registry_file!: 2,
           write_workflow_file!: 1,
           write_workflow_file!: 2,
           restore_env: 2,
@@ -73,6 +75,12 @@ defmodule SymphonyElixir.TestSupport do
     :ok
   end
 
+  def write_project_registry_file!(path, registry \\ %{schema_version: 1, projects: []}) do
+    content = project_registry_content(registry)
+    File.write!(path, content)
+    :ok
+  end
+
   def restore_env(key, nil), do: System.delete_env(key)
   def restore_env(key, value), do: System.put_env(key, value)
 
@@ -116,7 +124,7 @@ defmodule SymphonyElixir.TestSupport do
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
-          max_concurrent_agents: 10,
+          max_concurrent_agents: 20,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
@@ -237,6 +245,57 @@ defmodule SymphonyElixir.TestSupport do
   end
 
   defp yaml_value(value), do: yaml_value(to_string(value))
+
+  defp project_registry_content(content) when is_binary(content), do: content
+
+  defp project_registry_content(%{} = registry) do
+    lines =
+      []
+      |> maybe_append_registry_field("schema_version", Map.get(registry, :schema_version, Map.get(registry, "schema_version")))
+      |> maybe_append_projects_field(Map.get(registry, :projects, Map.get(registry, "projects", :missing)))
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join(lines, "\n") <> "\n"
+  end
+
+  defp maybe_append_registry_field(lines, _key, nil), do: lines
+
+  defp maybe_append_registry_field(lines, key, value) do
+    lines ++ ["#{key}: #{yaml_value(value)}"]
+  end
+
+  defp maybe_append_projects_field(lines, :missing), do: lines
+
+  defp maybe_append_projects_field(lines, projects) do
+    case projects do
+      list when is_list(list) ->
+        lines ++ ["projects:", project_registry_projects_yaml(list)]
+
+      other ->
+        lines ++ ["projects: #{yaml_value(other)}"]
+    end
+  end
+
+  defp project_registry_projects_yaml([]), do: "  []"
+
+  defp project_registry_projects_yaml(projects) when is_list(projects) do
+    Enum.map_join(projects, "\n", &project_registry_project_yaml/1)
+  end
+
+  defp project_registry_project_yaml(%{} = project) do
+    project
+    |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Enum.with_index()
+    |> Enum.map_join("\n", fn {{key, value}, index} ->
+      prefix = if index == 0, do: "  - ", else: "    "
+      "#{prefix}#{key}: #{yaml_value(value)}"
+    end)
+  end
+
+  defp project_registry_project_yaml(value) do
+    "  - #{yaml_value(value)}"
+  end
 
   defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 

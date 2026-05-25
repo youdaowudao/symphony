@@ -16,6 +16,14 @@
 - 局部代码改动：运行能直接覆盖被修改行为的 targeted tests。
 - 新增或修改测试时，先主动收口噪音：优先复用公共 helper，等待、轮询和 cleanup 不要散写在单个测试正文里。
 
+## 第一层：targeted tests
+
+- 第一层就是按 diff 选择本次改动直接相关的 targeted tests。
+- 默认在当前开发 workspace 跑，不新增长期测试工作区。
+- 所有 ExUnit 测试命令都必须显式带 `SYMPHONY_TEST_MAX_CASES`。
+- 异步等待、轮询和 cleanup 优先收口到公共 helper 或 `assert_eventually`，不要在测试正文里散写 `Process.sleep(...)`。
+- 详细的按改动选测试速查表继续保留在 `docs/initiatives/stage-plans/testing-plan/README.md`，这里只保留稳定原则。
+
 ## Gate 路由级别
 
 每次 push 前，先把这次改动路由到下面 3 级之一。先分级，再决定命令；不要先看到 `elixir/` 就直接上最高级 gate。
@@ -57,6 +65,8 @@
 - `light validation`：运行与改动范围匹配的最轻量 proof；必要时补 1 条最相关的 targeted test
 - `closeout gate`：先跑针对改动面的 targeted proof / targeted tests，再补 `cd elixir && SYMPHONY_TEST_MAX_CASES=4 mise exec -- mix format --check-formatted`、`cd elixir && SYMPHONY_TEST_MAX_CASES=4 mise exec -- mix lint`
 - `local make all`：先完成这次改动的 targeted proof / targeted tests，再完成 `closeout gate` 所需的 `fmt/lint` 和当前 diff 所需 review，最后再把 `cd elixir && SYMPHONY_TEST_MAX_CASES=4 mise exec -- make all` 作为高等级确认
+
+`mix lint`、`make lint` 和 `make all` 使用聚合报告：某个检查失败后，runner 会继续执行同一入口内的后续检查，最后汇总通过项和失败项；只要任一检查失败，入口最终仍返回非零状态。这个行为只改变错误展示完整性，不改变 gate 路由级别，也不把 `make all` 变成默认开发命令。
 
 高等级 gate 永远排在后面；不要一上来就先跑 `make all`。
 
@@ -119,6 +129,10 @@
 - 浏览器测试如需引入，独立成层。
 - 浏览器层不作为第一版本地默认前置。
 - 默认先证明 runtime、control-plane、API、生成链和状态收敛正确，再决定是否补浏览器层。
+- 第三层默认使用本机已经安装好的 Playwright / Chrome 能力，不在仓库里新增 Playwright 工程、依赖、lockfile 或安装步骤。
+- 第三层默认先无头，只有需要观察真实窗口、人工视觉判断或交互细节时，才切到有头。
+- 第三层的启动顺序是：先启动本次改动对应的本地服务，再用本机 Playwright 打开本地 URL 验证页面、交互和控制台，再关闭浏览器并清理本地服务与端口。
+- 如果这次验证的是本仓库自己的 dashboard / API 链路，目标应当是本地启动后的页面，而不是远端环境。
 
 ## 真实业务闭环层
 
@@ -129,6 +143,16 @@
 - 这层默认不依赖真实浏览器。
 - 这层内部尽量走真实 orchestration、真实 runtime、真实 control-plane、真实 API 和真实生成链。
 - 只有在外部依赖边界无法直接本地运行时，才允许用 contract-shaped fake/stub 补边界。
+
+## 真实外部副作用层
+
+- 这一层只覆盖真实外部系统副作用，不覆盖普通内部流程变化。
+- 仅当改动会触发真实 Linear 写入、真实 Codex app-server turn/tool call、真实 SSH worker、真实 Docker worker、远端 workspace 创建/清理，或其它真实外部资源生命周期变化时，才考虑这一层。
+- `workflow.md` 文本、状态枚举、polling、retry、blocked、orchestrator、runtime、control-plane、API、dashboard、浏览器交互、视觉验收，默认都不算这一层。
+- 这一层必须有明确的人类授权。没有明确授权时，AI 只能建议，不能静默触发。
+- 周期性 live smoke 可以单独维护，但不要把它混进普通 diff 的默认判断里。
+- 这一层的默认执行入口是 `SYMPHONY_TEST_MAX_CASES=4 SYMPHONY_RUN_LIVE_E2E=1 mise exec -- mix test test/symphony_elixir/live_e2e_test.exs`；如果后续要改成别的入口，也必须保持同样的显式授权和 cleanup 规则。
+- 执行前要先说清楚当前 head、输入、允许的外部副作用和 cleanup 责任，执行后要记录结果和失败分类。
 
 ## 第一版覆盖范围
 

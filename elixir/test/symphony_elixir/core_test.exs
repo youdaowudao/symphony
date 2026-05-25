@@ -88,6 +88,93 @@ defmodule SymphonyElixir.CoreTest do
     assert {:error, {:unsupported_tracker_kind, "123"}} = Config.validate!()
   end
 
+  test "config validation allows registry-first linear config without a legacy tracker.project_slug" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      projects: [
+        %{
+          project_key: "project-a",
+          enabled: true
+        }
+      ]
+    })
+
+    assert :ok = Config.validate!()
+  end
+
+  test "config validation rejects legacy tracker.project_slug conflicts when registry is present" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "legacy-project"
+    )
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      projects: [
+        %{
+          project_key: "project-a",
+          enabled: true
+        },
+        %{
+          project_key: "project-b",
+          enabled: false
+        }
+      ]
+    })
+
+    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
+             Config.validate!()
+  end
+
+  test "config validation rejects a legacy tracker.project_slug when the registry is explicitly empty" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: "legacy-project"
+    )
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      projects: []
+    })
+
+    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
+             Config.validate!()
+  end
+
+  test "config validation surfaces invalid project registry errors" do
+    write_project_registry_file!(
+      Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"),
+      "schema_version: [\n"
+    )
+
+    assert {:error, {:invalid_project_registry, message}} = Config.validate!()
+    assert message =~ "failed to parse YAML"
+  end
+
+  test "registry-stage validation does not require ProjectContext or tracker fetch integration" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      projects: [
+        %{
+          project_key: "project-a",
+          enabled: false
+        }
+      ]
+    })
+
+    assert :ok = Config.validate!()
+  end
+
   test "current WORKFLOW.md file is valid and complete" do
     original_workflow_path = Workflow.workflow_file_path()
     on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)

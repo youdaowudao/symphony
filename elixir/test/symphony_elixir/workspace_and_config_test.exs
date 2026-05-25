@@ -743,7 +743,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.tracker.project_slug == nil
     assert config.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
     assert config.worker.max_concurrent_agents_per_host == nil
-    assert config.agent.max_concurrent_agents == 10
+    assert config.agent.max_concurrent_agents == 20
     assert config.codex.command == "codex app-server"
 
     assert config.codex.approval_policy == %{
@@ -948,7 +948,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     workflow = """
     ---
     agent:
-      max_concurrent_agents: 10
+      max_concurrent_agents: 20
       max_concurrent_agents_by_state:
         todo: 1
         "In Progress": 4
@@ -958,12 +958,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
     File.write!(Workflow.workflow_file_path(), workflow)
 
-    assert Config.settings!().agent.max_concurrent_agents == 10
+    assert Config.settings!().agent.max_concurrent_agents == 20
     assert Config.max_concurrent_agents_for_state("Todo") == 1
     assert Config.max_concurrent_agents_for_state("In Progress") == 4
     assert Config.max_concurrent_agents_for_state("In Review") == 2
-    assert Config.max_concurrent_agents_for_state("Closed") == 10
-    assert Config.max_concurrent_agents_for_state(:not_a_string) == 10
+    assert Config.max_concurrent_agents_for_state("Closed") == 20
+    assert Config.max_concurrent_agents_for_state(:not_a_string) == 20
 
     write_workflow_file!(Workflow.workflow_file_path(), worker_max_concurrent_agents_per_host: 2)
     assert :ok = Config.validate!()

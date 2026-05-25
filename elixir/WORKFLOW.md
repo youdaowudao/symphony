@@ -30,7 +30,7 @@ hooks:
     # cd elixir && mise exec -- mix workspace.before_remove
     true
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 20
   max_turns: 20
 codex:
   command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.4"' --config model_reasoning_effort=xhigh --config mcp_servers.linear.enabled=true app-server
