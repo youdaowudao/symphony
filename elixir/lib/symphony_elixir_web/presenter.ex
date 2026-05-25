@@ -3,11 +3,12 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, StatusDashboard}
+  alias SymphonyElixir.{Config, Orchestrator, RuntimeStatus, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
-    generated_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+    generated_at_datetime = DateTime.utc_now() |> DateTime.truncate(:second)
+    generated_at = DateTime.to_iso8601(generated_at_datetime)
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
@@ -18,9 +19,9 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
-          running: Enum.map(snapshot.running, &running_entry_payload/1),
+          running: Enum.map(snapshot.running, &running_entry_payload(&1, generated_at_datetime)),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload/1),
+          blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload(&1, generated_at_datetime)),
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -35,6 +36,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
+    generated_at_datetime = DateTime.utc_now() |> DateTime.truncate(:second)
+
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
         running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
@@ -44,7 +47,7 @@ defmodule SymphonyElixirWeb.Presenter do
         if is_nil(running) and is_nil(retry) and is_nil(blocked) do
           {:error, :issue_not_found}
         else
-          {:ok, issue_payload_body(issue_identifier, running, retry, blocked)}
+          {:ok, issue_payload_body(issue_identifier, running, retry, blocked, generated_at_datetime)}
         end
 
       _ ->
@@ -63,11 +66,12 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  defp issue_payload_body(issue_identifier, running, retry, blocked) do
+  defp issue_payload_body(issue_identifier, running, retry, blocked, now) do
     %{
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry, blocked),
       status: issue_status(running, retry, blocked),
+      runtime_status: runtime_status(running, retry, blocked, now),
       workspace: %{
         path: workspace_path(issue_identifier, running, retry, blocked),
         host: workspace_host(running, retry, blocked)
@@ -76,9 +80,9 @@ defmodule SymphonyElixirWeb.Presenter do
         restart_count: restart_count(retry),
         current_retry_attempt: retry_attempt(retry)
       },
-      running: running && running_issue_payload(running),
+      running: running && running_issue_payload(running, now),
       retry: retry && retry_issue_payload(retry),
-      blocked: blocked && blocked_issue_payload(blocked),
+      blocked: blocked && blocked_issue_payload(blocked, now),
       logs: %{
         codex_session_logs: []
       },
@@ -99,11 +103,19 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_status(nil, retry, _blocked) when not is_nil(retry), do: "retrying"
   defp issue_status(nil, nil, _blocked), do: "blocked"
 
-  defp running_entry_payload(entry) do
+  defp runtime_status(running, retry, blocked, now) do
+    RuntimeStatus.classify(running || blocked || retry, now)
+    |> Atom.to_string()
+  end
+
+  defp runtime_status(entry, now) when is_map(entry), do: RuntimeStatus.classify(entry, now) |> Atom.to_string()
+
+  defp running_entry_payload(entry, now) do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
+      runtime_status: runtime_status(entry, now),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
       session_id: entry.session_id,
@@ -132,11 +144,12 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp blocked_entry_payload(entry) do
+  defp blocked_entry_payload(entry, now) do
     %{
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
+      runtime_status: runtime_status(entry, now),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
@@ -148,13 +161,14 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp running_issue_payload(running) do
+  defp running_issue_payload(running, now) do
     %{
       worker_host: Map.get(running, :worker_host),
       workspace_path: Map.get(running, :workspace_path),
       session_id: running.session_id,
       turn_count: Map.get(running, :turn_count, 0),
       state: running.state,
+      runtime_status: runtime_status(running, now),
       started_at: iso8601(running.started_at),
       last_event: running.last_codex_event,
       last_message: summarize_message(running.last_codex_message),
@@ -177,12 +191,13 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp blocked_issue_payload(blocked) do
+  defp blocked_issue_payload(blocked, now) do
     %{
       worker_host: Map.get(blocked, :worker_host),
       workspace_path: Map.get(blocked, :workspace_path),
       session_id: blocked.session_id,
       state: blocked.state,
+      runtime_status: runtime_status(blocked, now),
       error: blocked.error,
       blocked_at: iso8601(blocked.blocked_at),
       last_event: blocked.last_codex_event,

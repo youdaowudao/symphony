@@ -6,7 +6,7 @@ defmodule SymphonyElixir.StatusDashboard do
   use GenServer
   require Logger
 
-  alias SymphonyElixir.{Config, HttpServer}
+  alias SymphonyElixir.{Config, HttpServer, RuntimeStatus}
   alias SymphonyElixir.Orchestrator
   alias SymphonyElixirWeb.ObservabilityPubSub
 
@@ -593,7 +593,8 @@ defmodule SymphonyElixir.StatusDashboard do
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, terminal_columns_override, now) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
-    state = running_entry.state || "unknown"
+    runtime_status = running_runtime_status(running_entry, now)
+    state = Atom.to_string(runtime_status)
     state_display = format_cell(to_string(state), @running_stage_width)
     session = running_entry.session_id |> compact_session_id() |> format_cell(@running_session_width)
     pid = format_cell(running_entry.codex_app_server_pid || "n/a", @running_pid_width)
@@ -602,7 +603,7 @@ defmodule SymphonyElixir.StatusDashboard do
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
     freshness_timestamp = freshness_timestamp(running_entry)
-    stale? = stale_update?(freshness_timestamp, now)
+    stale? = runtime_status == :stale
     summary_line = running_summary_line(issue, state_display, pid, age, total_tokens, session, stale?)
     latest_event_line = latest_event_line(running_entry, terminal_columns_override, now, freshness_timestamp, stale?)
 
@@ -733,7 +734,7 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp freshness_timestamp(running_entry) when is_map(running_entry) do
-    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+    Map.get(running_entry, :last_codex_timestamp)
   end
 
   defp freshness_timestamp(_running_entry), do: nil
@@ -759,18 +760,17 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp relative_update_label(_timestamp, _now), do: "更新时间未知"
 
-  defp stale_update?(%DateTime{} = timestamp, %DateTime{} = now) do
-    DateTime.diff(now, timestamp, :second) > 10 * 60
-  end
-
-  defp stale_update?(_timestamp, _now), do: false
-
   defp status_color_for_state(_state_display, true), do: @ansi_dim
 
   defp status_color_for_state(state_display, false) do
     case String.trim(state_display) do
+      "stale" -> @ansi_gray
       "running" -> @ansi_green
       "retrying" -> @ansi_yellow
+      "waiting_input" -> @ansi_orange
+      "approval_required" -> @ansi_orange
+      "completed" -> @ansi_magenta
+      "error" -> @ansi_red
       "blocked" -> @ansi_red
       "unknown" -> @ansi_gray
       _ -> @ansi_blue
@@ -798,6 +798,9 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_runtime_and_turns(seconds, _turn_count), do: format_runtime_seconds(seconds)
+
+  defp running_runtime_status(running_entry, now) when is_map(running_entry), do: RuntimeStatus.classify(running_entry, now)
+  defp running_runtime_status(_running_entry, _now), do: :unknown
 
   defp format_count(nil), do: "0"
 

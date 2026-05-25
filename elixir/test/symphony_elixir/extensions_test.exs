@@ -348,6 +348,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
+                 "runtime_status" => "running",
                  "worker_host" => nil,
                  "workspace_path" => nil,
                  "session_id" => "thread-http",
@@ -375,6 +376,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "issue_id" => "issue-blocked",
                  "issue_identifier" => "MT-BLOCKED",
                  "state" => "In Progress",
+                 "runtime_status" => "waiting_input",
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
                  "workspace_path" => "/workspaces/MT-BLOCKED",
@@ -401,6 +403,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
              "status" => "running",
+             "runtime_status" => "running",
              "workspace" => %{
                "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
                "host" => nil
@@ -412,6 +415,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                "session_id" => "thread-http",
                "turn_count" => 7,
                "state" => "In Progress",
+               "runtime_status" => "running",
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
@@ -445,6 +449,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "blocked" => %{
                "session_id" => "thread-blocked",
                "state" => "In Progress",
+               "runtime_status" => "waiting_input",
                "error" => "codex turn requires operator input"
              }
            } = json_response(conn, 200)
@@ -579,6 +584,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
     assert html =~ "turn blocked: waiting for user input"
+    assert html =~ "waiting_input"
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
@@ -720,6 +726,8 @@ defmodule SymphonyElixir.ExtensionsTest do
   end
 
   defp static_snapshot do
+    now = DateTime.utc_now()
+
     %{
       running: [
         %{
@@ -730,12 +738,12 @@ defmodule SymphonyElixir.ExtensionsTest do
           turn_count: 7,
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
-          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_timestamp: now,
           last_codex_event: :notification,
           codex_input_tokens: 4,
           codex_output_tokens: 8,
           codex_total_tokens: 12,
-          started_at: DateTime.utc_now()
+          started_at: now
         }
       ],
       retrying: [
@@ -761,9 +769,9 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_message: %{
             event: :turn_input_required,
             message: %{"method" => "turn/input_required"},
-            timestamp: ~U[2026-05-24 21:36:38Z]
+            timestamp: now
           },
-          last_codex_timestamp: ~U[2026-05-24 21:36:38Z]
+          last_codex_timestamp: now
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

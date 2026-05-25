@@ -11,7 +11,7 @@
 │
 │   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
 │   ───────────────────────────────────────────────────────────────────────
-│ ● MT-201   running        4242     5m 5s / 5        45,120 thre...567890
+│ ● MT-201   completed      4242     5m 5s / 5        45,120 thre...567890
 │   latest event: turn completed (completed)                                                        · 3 分钟前更新
 │
 ├─ Backoff queue

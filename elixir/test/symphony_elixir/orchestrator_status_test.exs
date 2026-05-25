@@ -1457,11 +1457,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           runtime_seconds: 15,
           started_at: ~U[2026-05-24 21:36:38Z],
           last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
           last_codex_message: %{
             event: :notification,
             message: %{
-              "method" => "turn/completed",
-              "params" => %{"turn" => %{"status" => "completed"}}
+              "method" => "turn/started",
+              "params" => %{"turn" => %{"id" => "turn-1"}}
             }
           }
         },
@@ -1474,7 +1475,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert length(lines) == 2
     assert Enum.at(lines, 0) =~ "MT-233"
-    assert Enum.any?(lines, &String.contains?(&1, "turn completed (completed)"))
+    assert Enum.any?(lines, &String.contains?(&1, "turn started"))
     assert Enum.any?(lines, &String.contains?(&1, "3 分钟前更新"))
   end
 
@@ -1493,8 +1494,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           last_codex_message: %{
             event: :notification,
             message: %{
-              "method" => "turn/completed",
-              "params" => %{"turn" => %{"status" => "completed"}}
+              "method" => "turn/started",
+              "params" => %{"turn" => %{"id" => "turn-1"}}
             }
           }
         },
@@ -1507,10 +1508,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert length(lines) == 2
     assert Enum.at(lines, 0) =~ "MT-234"
-    assert Enum.any?(lines, &String.contains?(&1, "turn completed (completed)"))
+    assert Enum.any?(lines, &String.contains?(&1, "turn started"))
     assert Enum.any?(lines, &String.contains?(&1, "19 分钟前更新"))
     assert row =~ IO.ANSI.faint() <> "MT-234"
-    assert row =~ IO.ANSI.faint() <> "turn completed (completed)"
+    assert row =~ IO.ANSI.faint() <> "turn started"
   end
 
   test "status dashboard marks updates stale only after the 10-minute boundary" do
@@ -1575,6 +1576,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           runtime_seconds: 15,
           started_at: ~U[2026-05-24 21:39:38Z],
           last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:39:38Z],
           last_codex_message: %{
             event: :notification,
             message: %{
@@ -1689,8 +1691,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       last_codex_message: %{
         event: :notification,
         message: %{
-          "method" => "turn/completed",
-          "params" => %{"turn" => %{"status" => "completed"}}
+          "method" => "turn/started",
+          "params" => %{"turn" => %{"id" => "turn-1"}}
         }
       }
     }

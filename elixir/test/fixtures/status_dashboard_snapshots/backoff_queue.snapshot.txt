@@ -10,8 +10,8 @@
 │
 │   \e[90mID       STAGE          PID      AGE / TURN   TOKENS     SESSION       \e[0m
 │   \e[90m───────────────────────────────────────────────────────────────────────\e[0m
-│ \e[2m●\e[0m \e[2mMT-638  \e[0m \e[2mretrying      \e[0m \e[2m4242    \e[0m \e[2m20m 25s / 7 \e[0m \e[2m    14,200\e[0m \e[2mthre...567890 \e[0m
-│   \e[1mlatest event\e[0m\e[90m: \e[0m\e[2magent message streaming: waiting on rate-limit backoff window                   \e[0m \e[90m·\e[0m \e[2m20 分钟前更新\e[0m
+│ \e[32m●\e[0m \e[36mMT-638  \e[0m \e[32mrunning       \e[0m \e[33m4242    \e[0m \e[35m20m 25s / 7 \e[0m \e[33m    14,200\e[0m \e[36mthre...567890 \e[0m
+│   \e[1mlatest event\e[0m\e[90m: \e[0m\e[34magent message streaming: waiting on rate-limit backoff window                    \e[0m \e[90m·\e[0m \e[36m5 分钟前更新\e[0m
 │
 \e[1m├─ Backoff queue\e[0m
 │

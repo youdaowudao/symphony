@@ -54,6 +54,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 785,
              turn_count: 11,
              last_codex_event: "turn_completed",
+             last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
              last_codex_message: turn_completed_message("completed")
            }),
            running_entry(%{
@@ -64,6 +65,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 412,
              turn_count: 4,
              last_codex_event: "codex/event/task_started",
+             last_codex_timestamp: ~U[2026-05-24 21:33:38Z],
              last_codex_message: exec_command_message("mix test --cover")
            })
          ],
@@ -80,7 +82,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
            secondary: %{remaining: 45, limit: 60, reset_in_seconds: 12},
            credits: %{has_credits: true, balance: 9_876.5}
          }
-        }}
+       }}
 
     Snapshot.assert_dashboard_snapshot!("super_busy", render_snapshot(snapshot_data, 1_842.7, fixed_now()))
   end
@@ -121,6 +123,92 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     Snapshot.assert_dashboard_snapshot!("running_rows", rendered)
   end
 
+  test "running summary shows unknown freshness when no last codex timestamp exists" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-236",
+          state: "running",
+          runtime_status: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/started",
+              "params" => %{"turn" => %{"id" => "turn-1"}}
+            }
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "更新时间未知"
+    refute plain =~ "刚刚更新"
+  end
+
+  test "running summary shows runtime status instead of raw issue state" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-237",
+          state: "In Progress",
+          runtime_status: "waiting_input",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :turn_input_required,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_message: %{
+            event: :turn_input_required,
+            message: %{"method" => "turn/input_required"}
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "waiting_input"
+    refute plain =~ "In Progress"
+  end
+
+  test "running summary uses the render timestamp for runtime status classification" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-238",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:28:37Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/started"}
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "stale"
+    assert plain =~ "11 分钟前更新"
+    assert row =~ IO.ANSI.faint() <> "MT-238"
+  end
+
   test "snapshot fixture: backoff queue pressure" do
     snapshot_data =
       {:ok,
@@ -133,6 +221,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 1_225,
              turn_count: 7,
              last_codex_event: :notification,
+             last_codex_timestamp: ~U[2026-05-24 21:34:38Z],
              last_codex_message: agent_message_delta("waiting on rate-limit backoff window")
            })
          ],
@@ -214,6 +303,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 75,
              turn_count: 7,
              last_codex_event: "codex/event/token_count",
+             last_codex_timestamp: ~U[2026-05-24 21:38:38Z],
              last_codex_message: token_usage_message(90, 12, 102)
            })
          ],
@@ -250,6 +340,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
           runtime_seconds: 0,
           turn_count: 1,
           last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:39:38Z],
           last_codex_message: turn_started_message()
         },
         overrides
