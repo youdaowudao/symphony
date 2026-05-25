@@ -37,6 +37,17 @@ defmodule SymphonyElixir.StatusDashboard do
   @ansi_yellow IO.ANSI.yellow()
   @ansi_magenta IO.ANSI.magenta()
   @ansi_gray IO.ANSI.light_black()
+  @state_colors %{
+    "approval_required" => @ansi_orange,
+    "blocked" => @ansi_red,
+    "completed" => @ansi_magenta,
+    "error" => @ansi_red,
+    "retrying" => @ansi_yellow,
+    "running" => @ansi_green,
+    "stale" => @ansi_gray,
+    "unknown" => @ansi_gray,
+    "waiting_input" => @ansi_orange
+  }
 
   defstruct [
     :refresh_ms,
@@ -737,11 +748,9 @@ defmodule SymphonyElixir.StatusDashboard do
     Map.get(running_entry, :last_codex_timestamp)
   end
 
-  defp freshness_timestamp(_running_entry), do: nil
-
   defp latest_event_text_width(terminal_columns_override, relative_label) do
     terminal_columns = terminal_columns_override || terminal_columns()
-    prefix_width = display_width("│   latest event: ") + display_width(" · ") + display_width(relative_label || "")
+    prefix_width = display_width("│   latest event: ") + display_width(" · ") + display_width(relative_label)
     max(@running_event_min_width, terminal_columns - prefix_width)
   end
 
@@ -763,18 +772,7 @@ defmodule SymphonyElixir.StatusDashboard do
   defp status_color_for_state(_state_display, true), do: @ansi_dim
 
   defp status_color_for_state(state_display, false) do
-    case String.trim(state_display) do
-      "stale" -> @ansi_gray
-      "running" -> @ansi_green
-      "retrying" -> @ansi_yellow
-      "waiting_input" -> @ansi_orange
-      "approval_required" -> @ansi_orange
-      "completed" -> @ansi_magenta
-      "error" -> @ansi_red
-      "blocked" -> @ansi_red
-      "unknown" -> @ansi_gray
-      _ -> @ansi_blue
-    end
+    Map.get(@state_colors, String.trim(state_display), @ansi_blue)
   end
 
   defp status_color_for_event(:none), do: @ansi_red

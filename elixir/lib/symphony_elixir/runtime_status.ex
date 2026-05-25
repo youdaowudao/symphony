@@ -11,8 +11,6 @@ defmodule SymphonyElixir.RuntimeStatus do
   def classify(entry), do: classify(entry, DateTime.utc_now())
 
   @spec classify(term(), DateTime.t() | nil) :: t()
-  def classify(entry, now)
-
   def classify(%{} = entry, now) do
     case timestamp(entry) do
       nil ->
