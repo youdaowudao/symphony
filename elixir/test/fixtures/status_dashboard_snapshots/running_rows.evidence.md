@@ -1,18 +1,18 @@
 ```text
 ╭─ SYMPHONY STATUS
-│ Agents: 0/10
+│ Agents: 1/10
 │ Throughput: 0 tps
-│ Runtime: 0m 0s
-│ Tokens: in 0 | out 0 | total 0
+│ Runtime: 5m 5s
+│ Tokens: in 45,000 | out 120 | total 45,120
 │ Rate Limits: unavailable
 │ Project: https://linear.app/project/project/issues
-│ Dashboard: http://127.0.0.1:4000/
 │ Next refresh: n/a
 ├─ Running
 │
 │   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
 │   ───────────────────────────────────────────────────────────────────────
-│  No active agents
+│ ● MT-201   running        4242     5m 5s / 5        45,120 thre...567890
+│   latest event: turn completed (completed)                                                        · 3 分钟前更新
 │
 ├─ Backoff queue
 │

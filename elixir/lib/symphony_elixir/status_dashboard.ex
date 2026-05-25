@@ -330,7 +330,7 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil) do
+  defp format_snapshot_content(snapshot_data, tps, terminal_columns_override \\ nil, now \\ DateTime.utc_now()) do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
@@ -342,8 +342,7 @@ defmodule SymphonyElixir.StatusDashboard do
         codex_seconds_running = Map.get(codex_totals, :seconds_running, 0)
         agent_count = length(running)
         max_agents = Config.settings!().agent.max_concurrent_agents
-        running_event_width = running_event_width(terminal_columns_override)
-        running_rows = format_running_rows(running, running_event_width)
+        running_rows = format_running_rows(running, terminal_columns_override, now)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
 
@@ -367,8 +366,8 @@ defmodule SymphonyElixir.StatusDashboard do
            project_refresh_line,
            colorize("├─ Running", @ansi_bold),
            "│",
-           running_table_header_row(running_event_width),
-           running_table_separator_row(running_event_width)
+           running_table_header_row(),
+           running_table_separator_row()
          ] ++
            running_rows ++
            running_to_backoff_spacer ++
@@ -542,6 +541,11 @@ defmodule SymphonyElixir.StatusDashboard do
     do: format_snapshot_content(snapshot_data, tps, terminal_columns)
 
   @doc false
+  @spec format_snapshot_content_for_test(term(), number(), integer() | nil, DateTime.t()) :: String.t()
+  def format_snapshot_content_for_test(snapshot_data, tps, terminal_columns, now),
+    do: format_snapshot_content(snapshot_data, tps, terminal_columns, now)
+
+  @doc false
   @spec dashboard_url_for_test(String.t(), non_neg_integer() | nil, non_neg_integer() | nil) ::
           String.t() | nil
   def dashboard_url_for_test(host, configured_port, bound_port),
@@ -573,7 +577,7 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_running_rows(running, running_event_width) do
+  defp format_running_rows(running, terminal_columns_override, now) do
     if running == [] do
       [
         "│  " <> colorize("No active agents", @ansi_gray),
@@ -582,12 +586,12 @@ defmodule SymphonyElixir.StatusDashboard do
     else
       running
       |> Enum.sort_by(& &1.identifier)
-      |> Enum.map(&format_running_summary(&1, running_event_width))
+      |> Enum.flat_map(&format_running_summary(&1, terminal_columns_override, now))
     end
   end
 
   # credo:disable-for-next-line
-  defp format_running_summary(running_entry, running_event_width) do
+  defp format_running_summary(running_entry, terminal_columns_override, now) do
     issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
     state = running_entry.state || "unknown"
     state_display = format_cell(to_string(state), @running_stage_width)
@@ -597,45 +601,26 @@ defmodule SymphonyElixir.StatusDashboard do
     runtime_seconds = running_entry.runtime_seconds || 0
     turn_count = Map.get(running_entry, :turn_count, 0)
     age = format_cell(format_runtime_and_turns(runtime_seconds, turn_count), @running_age_width)
-    event = running_entry.last_codex_event || "none"
-    event_label = format_cell(summarize_message(running_entry.last_codex_message), running_event_width)
-
-    tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
-
-    status_color =
-      case event do
-        :none -> @ansi_red
-        "codex/event/token_count" -> @ansi_yellow
-        "codex/event/task_started" -> @ansi_green
-        "turn_completed" -> @ansi_magenta
-        _ -> @ansi_blue
-      end
+    freshness_timestamp = freshness_timestamp(running_entry)
+    stale? = stale_update?(freshness_timestamp, now)
+    summary_line = running_summary_line(issue, state_display, pid, age, total_tokens, session, stale?)
+    latest_event_line = latest_event_line(running_entry, terminal_columns_override, now, freshness_timestamp, stale?)
 
     [
-      "│ ",
-      status_dot(status_color),
-      " ",
-      colorize(issue, @ansi_cyan),
-      " ",
-      colorize(state_display, status_color),
-      " ",
-      colorize(pid, @ansi_yellow),
-      " ",
-      colorize(age, @ansi_magenta),
-      " ",
-      colorize(tokens, @ansi_yellow),
-      " ",
-      colorize(session, @ansi_cyan),
-      " ",
-      colorize(event_label, status_color)
+      summary_line,
+      latest_event_line
     ]
-    |> Enum.join("")
   end
 
   @doc false
   @spec format_running_summary_for_test(map(), integer() | nil) :: String.t()
   def format_running_summary_for_test(running_entry, terminal_columns \\ nil),
-    do: format_running_summary(running_entry, running_event_width(terminal_columns))
+    do: format_running_summary(running_entry, terminal_columns, DateTime.utc_now()) |> Enum.join("\n")
+
+  @doc false
+  @spec format_running_summary_for_test(map(), integer() | nil, DateTime.t()) :: String.t()
+  def format_running_summary_for_test(running_entry, terminal_columns, now),
+    do: format_running_summary(running_entry, terminal_columns, now) |> Enum.join("\n")
 
   @doc false
   @spec format_tps_for_test(number()) :: String.t()
@@ -701,6 +686,104 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_retry_error(_), do: ""
 
+  defp running_summary_line(issue, state_display, pid, age, total_tokens, session, stale?) do
+    tokens = format_count(total_tokens) |> format_cell(@running_tokens_width, :right)
+    state_color = status_color_for_state(state_display, stale?)
+    detail_color = if(stale?, do: @ansi_dim, else: nil)
+
+    [
+      "│ ",
+      status_dot(state_color),
+      " ",
+      colorize(issue, detail_color || @ansi_cyan),
+      " ",
+      colorize(state_display, state_color),
+      " ",
+      colorize(pid, detail_color || @ansi_yellow),
+      " ",
+      colorize(age, detail_color || @ansi_magenta),
+      " ",
+      colorize(tokens, detail_color || @ansi_yellow),
+      " ",
+      colorize(session, detail_color || @ansi_cyan)
+    ]
+    |> Enum.join("")
+  end
+
+  defp latest_event_line(running_entry, terminal_columns_override, now, freshness_timestamp, stale?) do
+    event = running_entry.last_codex_event || "none"
+    status_color = status_color_for_event(event)
+    event_text = summarize_message(running_entry.last_codex_message)
+    relative_label = relative_update_label(freshness_timestamp, now)
+    event_width = latest_event_text_width(terminal_columns_override, relative_label)
+    content_color = if(stale?, do: @ansi_dim, else: status_color)
+    label_color = if(stale?, do: @ansi_dim, else: @ansi_cyan)
+
+    [
+      "│   ",
+      colorize("latest event", @ansi_bold),
+      colorize(": ", @ansi_gray),
+      colorize(format_cell(event_text, event_width), content_color),
+      " ",
+      colorize("·", @ansi_gray),
+      " ",
+      colorize(relative_label, label_color)
+    ]
+    |> Enum.join("")
+  end
+
+  defp freshness_timestamp(running_entry) when is_map(running_entry) do
+    Map.get(running_entry, :last_codex_timestamp) || Map.get(running_entry, :started_at)
+  end
+
+  defp freshness_timestamp(_running_entry), do: nil
+
+  defp latest_event_text_width(terminal_columns_override, relative_label) do
+    terminal_columns = terminal_columns_override || terminal_columns()
+    prefix_width = display_width("│   latest event: ") + display_width(" · ") + display_width(relative_label || "")
+    max(@running_event_min_width, terminal_columns - prefix_width)
+  end
+
+  defp relative_update_label(nil, _now), do: "更新时间未知"
+
+  defp relative_update_label(%DateTime{} = timestamp, %DateTime{} = now) do
+    elapsed_seconds = max(DateTime.diff(now, timestamp, :second), 0)
+
+    cond do
+      elapsed_seconds < 60 -> "刚刚更新"
+      elapsed_seconds < 3_600 -> "#{div(elapsed_seconds, 60)} 分钟前更新"
+      elapsed_seconds < 86_400 -> "#{div(elapsed_seconds, 3_600)} 小时前更新"
+      true -> "#{div(elapsed_seconds, 86_400)} 天前更新"
+    end
+  end
+
+  defp relative_update_label(_timestamp, _now), do: "更新时间未知"
+
+  defp stale_update?(%DateTime{} = timestamp, %DateTime{} = now) do
+    DateTime.diff(now, timestamp, :second) > 10 * 60
+  end
+
+  defp stale_update?(_timestamp, _now), do: false
+
+  defp status_color_for_state(_state_display, true), do: @ansi_dim
+
+  defp status_color_for_state(state_display, false) do
+    case String.trim(state_display) do
+      "running" -> @ansi_green
+      "retrying" -> @ansi_yellow
+      "blocked" -> @ansi_red
+      "unknown" -> @ansi_gray
+      _ -> @ansi_blue
+    end
+  end
+
+  defp status_color_for_event(:none), do: @ansi_red
+  defp status_color_for_event("turn_completed"), do: @ansi_magenta
+  defp status_color_for_event("codex/event/token_count"), do: @ansi_yellow
+  defp status_color_for_event("codex/event/task_started"), do: @ansi_green
+  defp status_color_for_event("notification"), do: @ansi_blue
+  defp status_color_for_event(_), do: @ansi_blue
+
   defp format_runtime_seconds(seconds) when is_integer(seconds) do
     mins = div(seconds, 60)
     secs = rem(seconds, 60)
@@ -736,7 +819,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp format_count(value), do: to_string(value)
 
-  defp running_table_header_row(running_event_width) do
+  defp running_table_header_row do
     header =
       [
         format_cell("ID", @running_id_width),
@@ -744,15 +827,14 @@ defmodule SymphonyElixir.StatusDashboard do
         format_cell("PID", @running_pid_width),
         format_cell("AGE / TURN", @running_age_width),
         format_cell("TOKENS", @running_tokens_width),
-        format_cell("SESSION", @running_session_width),
-        format_cell("EVENT", running_event_width)
+        format_cell("SESSION", @running_session_width)
       ]
       |> Enum.join(" ")
 
     "│   " <> colorize(header, @ansi_gray)
   end
 
-  defp running_table_separator_row(running_event_width) do
+  defp running_table_separator_row do
     separator_width =
       @running_id_width +
         @running_stage_width +
@@ -760,18 +842,9 @@ defmodule SymphonyElixir.StatusDashboard do
         @running_age_width +
         @running_tokens_width +
         @running_session_width +
-        running_event_width + 6
+        5
 
     "│   " <> colorize(String.duplicate("─", separator_width), @ansi_gray)
-  end
-
-  defp running_event_width(terminal_columns) do
-    terminal_columns = terminal_columns || terminal_columns()
-
-    max(
-      @running_event_min_width,
-      terminal_columns - fixed_running_width() - @running_row_chrome_width
-    )
   end
 
   defp fixed_running_width do
@@ -826,6 +899,22 @@ defmodule SymphonyElixir.StatusDashboard do
       value
     else
       String.slice(value, 0, width - 3) <> "..."
+    end
+  end
+
+  defp display_width(value) when is_binary(value) do
+    value
+    |> String.graphemes()
+    |> Enum.reduce(0, fn grapheme, width ->
+      width + grapheme_display_width(grapheme)
+    end)
+  end
+
+  defp grapheme_display_width(grapheme) do
+    if String.match?(grapheme, ~r/[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/u) do
+      2
+    else
+      1
     end
   end
 

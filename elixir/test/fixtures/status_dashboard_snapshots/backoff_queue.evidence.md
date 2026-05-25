@@ -9,9 +9,10 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
-│   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-638   retrying       4242     20m 25s / 7      14,200 thre...567890  agent message streaming: waiting on ...
+│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
+│   ───────────────────────────────────────────────────────────────────────
+│ ● MT-638   retrying       4242     20m 25s / 7      14,200 thre...567890
+│   latest event: agent message streaming: waiting on rate-limit backoff window                    · 20 分钟前更新
 │
 ├─ Backoff queue
 │

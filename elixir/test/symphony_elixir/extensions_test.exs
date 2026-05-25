@@ -355,7 +355,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "last_event" => "notification",
                  "last_message" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
-                 "last_event_at" => nil,
+                 "last_event_at" => state_payload["running"] |> List.first() |> Map.fetch!("last_event_at"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
@@ -415,13 +415,19 @@ defmodule SymphonyElixir.ExtensionsTest do
                "started_at" => issue_payload["running"]["started_at"],
                "last_event" => "notification",
                "last_message" => "rendered",
-               "last_event_at" => nil,
+               "last_event_at" => issue_payload["running"]["last_event_at"],
                "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
              },
              "retry" => nil,
              "blocked" => nil,
              "logs" => %{"codex_session_logs" => []},
-             "recent_events" => [],
+             "recent_events" => [
+               %{
+                 "at" => issue_payload["running"]["last_event_at"],
+                 "event" => "notification",
+                 "message" => "rendered"
+               }
+             ],
              "last_error" => nil,
              "tracked" => %{}
            }
@@ -724,7 +730,7 @@ defmodule SymphonyElixir.ExtensionsTest do
           turn_count: 7,
           codex_app_server_pid: nil,
           last_codex_message: "rendered",
-          last_codex_timestamp: nil,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
           last_codex_event: :notification,
           codex_input_tokens: 4,
           codex_output_tokens: 8,
@@ -755,9 +761,9 @@ defmodule SymphonyElixir.ExtensionsTest do
           last_codex_message: %{
             event: :turn_input_required,
             message: %{"method" => "turn/input_required"},
-            timestamp: DateTime.utc_now()
+            timestamp: ~U[2026-05-24 21:36:38Z]
           },
-          last_codex_timestamp: DateTime.utc_now()
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z]
         }
       ],
       codex_totals: %{input_tokens: 4, output_tokens: 8, total_tokens: 12, seconds_running: 42.5},

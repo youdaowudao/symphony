@@ -1445,30 +1445,91 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert disk_config.max_no_files > 0
   end
 
-  test "status dashboard renders last codex message in EVENT column" do
+  test "status dashboard renders last codex message with a relative freshness label" do
     row =
-      StatusDashboard.format_running_summary_for_test(%{
-        identifier: "MT-233",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 12,
-        runtime_seconds: 15,
-        last_codex_event: :notification,
-        last_codex_message: %{
-          event: :notification,
-          message: %{
-            "method" => "turn/completed",
-            "params" => %{"turn" => %{"status" => "completed"}}
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-233",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          started_at: ~U[2026-05-24 21:36:38Z],
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
           }
-        }
-      })
+        },
+        nil,
+        ~U[2026-05-24 21:39:38Z]
+      )
 
-    plain = Regex.replace(~r/\e\[[\\d;]*m/, row, "")
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+    lines = String.split(plain, "\n")
 
-    assert plain =~ "turn completed (completed)"
-    assert (String.split(plain, "turn completed (completed)") |> length()) - 1 == 1
-    refute plain =~ " notification "
+    assert length(lines) == 2
+    assert Enum.at(lines, 0) =~ "MT-233"
+    assert Enum.any?(lines, &String.contains?(&1, "turn completed (completed)"))
+    assert Enum.any?(lines, &String.contains?(&1, "3 分钟前更新"))
+  end
+
+  test "status dashboard shows stale running rows with a faint relative-time label" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-234",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:20:38Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/completed",
+              "params" => %{"turn" => %{"status" => "completed"}}
+            }
+          }
+        },
+        nil,
+        ~U[2026-05-24 21:39:38Z]
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+    lines = String.split(plain, "\n")
+
+    assert length(lines) == 2
+    assert Enum.at(lines, 0) =~ "MT-234"
+    assert Enum.any?(lines, &String.contains?(&1, "turn completed (completed)"))
+    assert Enum.any?(lines, &String.contains?(&1, "19 分钟前更新"))
+    assert row =~ IO.ANSI.faint() <> "MT-234"
+    assert row =~ IO.ANSI.faint() <> "turn completed (completed)"
+  end
+
+  test "status dashboard marks updates stale only after the 10-minute boundary" do
+    fresh_boundary_row =
+      StatusDashboard.format_running_summary_for_test(
+        running_summary_fixture(~U[2026-05-24 21:29:38Z]),
+        nil,
+        ~U[2026-05-24 21:39:38Z]
+      )
+
+    stale_boundary_row =
+      StatusDashboard.format_running_summary_for_test(
+        running_summary_fixture(~U[2026-05-24 21:29:37Z]),
+        nil,
+        ~U[2026-05-24 21:39:38Z]
+      )
+
+    refute fresh_boundary_row =~ IO.ANSI.faint() <> "MT-235"
+    assert stale_boundary_row =~ IO.ANSI.faint() <> "MT-235"
   end
 
   test "status dashboard strips ANSI and control bytes from last codex message" do
@@ -1512,6 +1573,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           codex_app_server_pid: "4242",
           codex_total_tokens: 123,
           runtime_seconds: 15,
+          started_at: ~U[2026-05-24 21:39:38Z],
           last_codex_event: :notification,
           last_codex_message: %{
             event: :notification,
@@ -1521,13 +1583,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
             }
           }
         },
-        terminal_columns
+        terminal_columns,
+        ~U[2026-05-24 21:39:38Z]
       )
 
     plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+    lines = String.split(plain, "\n")
 
-    assert String.length(plain) == terminal_columns
-    assert plain =~ "turn completed (completed)"
+    assert length(lines) == 2
+    assert Enum.at(lines, 0) =~ "MT-598"
+    assert Enum.any?(lines, &String.contains?(&1, "turn completed (completed)"))
+    assert Enum.any?(lines, &String.contains?(&1, "刚刚更新"))
+
+    assert Enum.all?(lines, &(display_width(&1) <= terminal_columns))
   end
 
   test "status dashboard humanizes full codex app-server event set" do
@@ -1606,6 +1674,43 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert StatusDashboard.humanize_codex_message(unsupported) =~
              "unsupported dynamic tool call rejected (unknown_tool)"
+  end
+
+  defp running_summary_fixture(timestamp) do
+    %{
+      identifier: "MT-235",
+      state: "running",
+      session_id: "thread-1234567890",
+      codex_app_server_pid: "4242",
+      codex_total_tokens: 12,
+      runtime_seconds: 15,
+      last_codex_event: :notification,
+      last_codex_timestamp: timestamp,
+      last_codex_message: %{
+        event: :notification,
+        message: %{
+          "method" => "turn/completed",
+          "params" => %{"turn" => %{"status" => "completed"}}
+        }
+      }
+    }
+  end
+
+  defp display_width(value) do
+    value
+    |> then(&Regex.replace(~r/\e\[[\d;]*m/, &1, ""))
+    |> String.graphemes()
+    |> Enum.reduce(0, fn grapheme, width ->
+      width + grapheme_display_width(grapheme)
+    end)
+  end
+
+  defp grapheme_display_width(grapheme) do
+    if String.match?(grapheme, ~r/[\p{Han}\p{Hiragana}\p{Katakana}\p{Hangul}]/u) do
+      2
+    else
+      1
+    end
   end
 
   test "status dashboard unwraps nested codex payload envelopes" do
