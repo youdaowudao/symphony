@@ -62,6 +62,21 @@
   - 若修复改变了 reviewed object、validation input、shared support、gate plumbing，或影响代码/行为，再重过当前 diff 所需 review。
   - 只有这些都通过后，才把 `make all` 作为最后一步重新执行。
 - 如果是远端 CI / full gate 失败：
+  - 调查 GitHub Actions 失败时，必须先获取远端 job 原始日志，不得只看 check summary 后直接本地复现。
+    - 优先用 GitHub API 读取对应 job log。
+    - 如果未认证请求返回 `403 Must have admin rights to Repository`，不要直接判断为“没有权限”。
+    - 先检查本机是否已有 repo 的 GitHub git credential：
+      `printf 'protocol=https\nhost=github.com\npath=<owner>/<repo>.git\n\n' | git credential fill`
+    - 本仓库当前可用凭证来自：
+      `credential.helper = store --file ~/.config/git/github-push-credentials`
+    - 使用该 credential 认证请求：
+      `GET /repos/<owner>/<repo>/actions/jobs/<job_id>/logs`
+    - 只有在本机 git credential 缺失、认证后仍 403，或认证身份没有 repo admin / actions log 读取权限时，才报告需要人类补权限。
+    - 记录分析时必须区分：
+      - check-run summary / annotations
+      - job metadata
+      - job 原始日志
+      - 本地复现输出
   - 本地按同样顺序处理。
   - 不要把 CI 红灯理解成“先重新跑 full gate 就行”。
   - 应先定位问题、做最小修复、重过最小 proof 和所需 review，再回到高等级 gate。

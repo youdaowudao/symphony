@@ -9,10 +9,12 @@
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION        EVENT                                  
-│   ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
-│ ● MT-101   running        4242     13m 5s / 11     120,450 thre...567890  turn completed (completed)             
-│ ● MT-102   running        5252     6m 52s / 4       89,200 thre...567890  mix test --cover                       
+│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
+│   ───────────────────────────────────────────────────────────────────────
+│ ● MT-101   completed      4242     13m 5s / 11     120,450 thre...567890
+│   latest event: turn completed (completed)                                                        · 3 分钟前更新
+│ ● MT-102   running        5252     6m 52s / 4       89,200 thre...567890
+│   latest event: mix test --cover                                                                  · 6 分钟前更新
 │
 ├─ Backoff queue
 │

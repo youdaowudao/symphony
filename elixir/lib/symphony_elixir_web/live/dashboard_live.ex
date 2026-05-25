@@ -163,8 +163,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td>
-                      <span class={state_badge_class(entry.state)}>
-                        <%= entry.state %>
+                      <span class={state_badge_class(entry.runtime_status || entry.state)}>
+                        <%= entry.runtime_status || entry.state %>
                       </span>
                     </td>
                     <td>
@@ -244,8 +244,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
                       </div>
                     </td>
                     <td>
-                      <span class={state_badge_class(entry.state || "Blocked")}>
-                        <%= entry.state || "Blocked" %>
+                      <span class={state_badge_class(entry.runtime_status || entry.state || "blocked")}>
+                        <%= entry.runtime_status || entry.state || "blocked" %>
                       </span>
                     </td>
                     <td>
@@ -396,6 +396,8 @@ defmodule SymphonyElixirWeb.DashboardLive do
     cond do
       String.contains?(normalized, ["progress", "running", "active"]) -> "#{base} state-badge-active"
       String.contains?(normalized, ["blocked", "error", "failed"]) -> "#{base} state-badge-danger"
+      String.contains?(normalized, ["waiting_input", "approval_required"]) -> "#{base} state-badge-warning"
+      String.contains?(normalized, ["completed"]) -> "#{base} state-badge-active"
       String.contains?(normalized, ["todo", "queued", "pending", "retry"]) -> "#{base} state-badge-warning"
       true -> base
     end

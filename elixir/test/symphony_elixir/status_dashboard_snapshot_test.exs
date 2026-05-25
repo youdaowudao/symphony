@@ -15,7 +15,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          rate_limits: nil
        }}
 
-    Snapshot.assert_dashboard_snapshot!("idle", render_snapshot(snapshot_data, 0.0))
+    Snapshot.assert_dashboard_snapshot!("idle", render_snapshot(snapshot_data, 0.0, fixed_now()))
   end
 
   test "snapshot fixture: idle dashboard with observability url" do
@@ -40,7 +40,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          rate_limits: nil
        }}
 
-    Snapshot.assert_dashboard_snapshot!("idle_with_dashboard_url", render_snapshot(snapshot_data, 0.0))
+    Snapshot.assert_dashboard_snapshot!("idle_with_dashboard_url", render_snapshot(snapshot_data, 0.0, fixed_now()))
   end
 
   test "snapshot fixture: super busy dashboard" do
@@ -54,6 +54,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 785,
              turn_count: 11,
              last_codex_event: "turn_completed",
+             last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
              last_codex_message: turn_completed_message("completed")
            }),
            running_entry(%{
@@ -64,6 +65,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 412,
              turn_count: 4,
              last_codex_event: "codex/event/task_started",
+             last_codex_timestamp: ~U[2026-05-24 21:33:38Z],
              last_codex_message: exec_command_message("mix test --cover")
            })
          ],
@@ -82,7 +84,129 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          }
        }}
 
-    Snapshot.assert_dashboard_snapshot!("super_busy", render_snapshot(snapshot_data, 1_842.7))
+    Snapshot.assert_dashboard_snapshot!("super_busy", render_snapshot(snapshot_data, 1_842.7, fixed_now()))
+  end
+
+  test "snapshot fixture: running rows with recent event lines" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           running_entry(%{
+             identifier: "MT-201",
+             codex_total_tokens: 45_120,
+             runtime_seconds: 305,
+             turn_count: 5,
+             last_codex_event: "turn_completed",
+             last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+             last_codex_message: turn_completed_message("completed")
+           })
+         ],
+         retrying: [],
+         codex_totals: %{
+           input_tokens: 45_000,
+           output_tokens: 120,
+           total_tokens: 45_120,
+           seconds_running: 305
+         },
+         rate_limits: nil
+       }}
+
+    rendered = render_snapshot(snapshot_data, 0.0, fixed_now())
+    plain = Snapshot.strip_ansi(rendered)
+
+    assert plain =~ "latest event"
+    assert plain =~ "3 分钟前更新"
+    refute plain =~ "2026-05-24 21:36:38Z"
+    assert plain =~ "turn completed (completed)"
+
+    Snapshot.assert_dashboard_snapshot!("running_rows", rendered)
+  end
+
+  test "running summary shows unknown freshness when no last codex timestamp exists" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-236",
+          state: "running",
+          runtime_status: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_message: %{
+            event: :notification,
+            message: %{
+              "method" => "turn/started",
+              "params" => %{"turn" => %{"id" => "turn-1"}}
+            }
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "更新时间未知"
+    refute plain =~ "刚刚更新"
+  end
+
+  test "running summary shows runtime status instead of raw issue state" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-237",
+          state: "In Progress",
+          runtime_status: "waiting_input",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :turn_input_required,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_message: %{
+            event: :turn_input_required,
+            message: %{"method" => "turn/input_required"}
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "waiting_input"
+    refute plain =~ "In Progress"
+  end
+
+  test "running summary uses the render timestamp for runtime status classification" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-238",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:28:37Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/started"}
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "stale"
+    assert plain =~ "11 分钟前更新"
+    assert row =~ IO.ANSI.faint() <> "MT-238"
   end
 
   test "snapshot fixture: backoff queue pressure" do
@@ -97,6 +221,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 1_225,
              turn_count: 7,
              last_codex_event: :notification,
+             last_codex_timestamp: ~U[2026-05-24 21:34:38Z],
              last_codex_message: agent_message_delta("waiting on rate-limit backoff window")
            })
          ],
@@ -135,7 +260,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          }
        }}
 
-    Snapshot.assert_dashboard_snapshot!("backoff_queue", render_snapshot(snapshot_data, 15.4))
+    Snapshot.assert_dashboard_snapshot!("backoff_queue", render_snapshot(snapshot_data, 15.4, fixed_now()))
   end
 
   test "backoff queue row escapes escaped newline sequences" do
@@ -155,7 +280,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          rate_limits: nil
        }}
 
-    rendered = render_snapshot(snapshot_data, 0.0)
+    rendered = render_snapshot(snapshot_data, 0.0, fixed_now())
     backoff_lines = rendered |> String.split("\n") |> Enum.filter(&String.contains?(&1, "MT-980"))
 
     assert length(backoff_lines) == 1
@@ -178,6 +303,7 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
              runtime_seconds: 75,
              turn_count: 7,
              last_codex_event: "codex/event/token_count",
+             last_codex_timestamp: ~U[2026-05-24 21:38:38Z],
              last_codex_message: token_usage_message(90, 12, 102)
            })
          ],
@@ -191,27 +317,39 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
          }
        }}
 
-    Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0))
+    Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0, fixed_now()))
   end
 
-  defp render_snapshot(snapshot_data, tps) do
-    StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns)
+  defp render_snapshot(snapshot_data, tps, now) do
+    StatusDashboard.format_snapshot_content_for_test(snapshot_data, tps, @terminal_columns, now)
+  end
+
+  defp fixed_now do
+    ~U[2026-05-24 21:39:38Z]
   end
 
   defp running_entry(overrides) do
-    Map.merge(
-      %{
-        identifier: "MT-000",
-        state: "running",
-        session_id: "thread-1234567890",
-        codex_app_server_pid: "4242",
-        codex_total_tokens: 0,
-        runtime_seconds: 0,
-        turn_count: 1,
-        last_codex_event: :notification,
-        last_codex_message: turn_started_message()
-      },
-      overrides
+    entry =
+      Map.merge(
+        %{
+          identifier: "MT-000",
+          state: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 0,
+          runtime_seconds: 0,
+          turn_count: 1,
+          last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:39:38Z],
+          last_codex_message: turn_started_message()
+        },
+        overrides
+      )
+
+    Map.put_new(
+      entry,
+      :started_at,
+      DateTime.add(fixed_now(), -Map.get(entry, :runtime_seconds, 0), :second)
     )
   end
 

@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>3.1 Project Registry 可视化说明</title>
+  <style>
+    :root {
+      --ink: #17211a;
+      --muted: #667164;
+      --paper: #fbf5e8;
+      --panel: #fffaf0;
+      --line: #d7c7a4;
+      --green: #2d6a4f;
+      --green-soft: #dff0df;
+      --amber: #b5651d;
+      --amber-soft: #f4dfbd;
+      --red: #9b2c2c;
+      --red-soft: #f4d6d0;
+      --blue: #255f85;
+      --blue-soft: #dceaf2;
+      --shadow: 0 20px 70px rgba(52, 39, 16, 0.16);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 10%, rgba(181, 101, 29, 0.16), transparent 32rem),
+        radial-gradient(circle at 85% 18%, rgba(37, 95, 133, 0.14), transparent 28rem),
+        linear-gradient(135deg, #fbf5e8 0%, #f2ead7 48%, #ecdfc2 100%);
+      font-family: "Iowan Old Style", "Songti SC", "Noto Serif CJK SC", Georgia, serif;
+      line-height: 1.65;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 48px 28px 72px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 28px;
+      align-items: stretch;
+      margin-bottom: 28px;
+    }
+
+    .card {
+      background: rgba(255, 250, 240, 0.86);
+      border: 1px solid rgba(215, 199, 164, 0.9);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(12px);
+    }
+
+    .hero-main {
+      padding: 34px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero-main::after {
+      content: "";
+      position: absolute;
+      right: -90px;
+      bottom: -110px;
+      width: 260px;
+      height: 260px;
+      border-radius: 50%;
+      background: rgba(45, 106, 79, 0.12);
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      margin: 0 0 14px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--green-soft);
+      color: var(--green);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(38px, 6vw, 76px);
+      line-height: 0.95;
+      letter-spacing: -0.055em;
+    }
+
+    .hero-copy {
+      max-width: 680px;
+      margin: 22px 0 0;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .hero-side {
+      padding: 26px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .plain-title {
+      margin: 0 0 8px;
+      font-size: 18px;
+      letter-spacing: -0.02em;
+    }
+
+    .big-answer {
+      margin: 0;
+      color: var(--green);
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.18;
+    }
+
+    .section {
+      margin-top: 26px;
+      padding: 30px;
+    }
+
+    .section h2 {
+      margin: 0 0 16px;
+      font-size: 30px;
+      letter-spacing: -0.035em;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .mini-card {
+      padding: 22px;
+      border-radius: 22px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.42);
+    }
+
+    .mini-card h3 {
+      margin: 0 0 10px;
+      font-size: 20px;
+    }
+
+    .mini-card p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .tag {
+      display: inline-flex;
+      margin-bottom: 12px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 800;
+    }
+
+    .tag-old {
+      color: var(--amber);
+      background: var(--amber-soft);
+    }
+
+    .tag-new {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .tag-risk {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .tag-blue {
+      color: var(--blue);
+      background: var(--blue-soft);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: 1fr 76px 1fr;
+      gap: 16px;
+      align-items: center;
+      margin-top: 18px;
+    }
+
+    .flow-arrow {
+      display: grid;
+      place-items: center;
+      height: 76px;
+      border-radius: 22px;
+      background: var(--green);
+      color: white;
+      font-size: 34px;
+      font-weight: 900;
+      box-shadow: 0 18px 40px rgba(45, 106, 79, 0.25);
+    }
+
+    .mono-box {
+      margin: 12px 0 0;
+      padding: 16px;
+      border-radius: 18px;
+      background: #17211a;
+      color: #f8ecd0;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 14px;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+
+    .field-table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.5);
+    }
+
+    .field-table th,
+    .field-table td {
+      padding: 14px 16px;
+      text-align: left;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+
+    .field-table th {
+      color: var(--green);
+      background: rgba(223, 240, 223, 0.7);
+      font-size: 14px;
+    }
+
+    .field-table tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .callout {
+      margin-top: 18px;
+      padding: 18px 20px;
+      border-left: 6px solid var(--green);
+      border-radius: 18px;
+      background: rgba(223, 240, 223, 0.7);
+    }
+
+    .danger {
+      border-left-color: var(--red);
+      background: rgba(244, 214, 208, 0.68);
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-top: 16px;
+    }
+
+    .diagram {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .node {
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.55);
+    }
+
+    .node strong {
+      color: var(--green);
+    }
+
+    .node.bad strong {
+      color: var(--red);
+    }
+
+    .vertical-arrow {
+      text-align: center;
+      color: var(--muted);
+      font-size: 24px;
+      line-height: 1;
+    }
+
+    .checklist {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .check {
+      min-height: 96px;
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255, 255, 255, 0.5);
+      border: 1px solid var(--line);
+      font-weight: 700;
+    }
+
+    .check span {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--green);
+      font-size: 13px;
+    }
+
+    @media (max-width: 900px) {
+      .hero,
+      .grid-2,
+      .compare,
+      .flow {
+        grid-template-columns: 1fr;
+      }
+
+      .flow-arrow {
+        height: 54px;
+        transform: rotate(90deg);
+      }
+
+      .checklist {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .page {
+        padding: 24px 14px 44px;
+      }
+
+      .hero-main,
+      .hero-side,
+      .section {
+        padding: 22px;
+      }
+
+      .checklist {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="card hero-main">
+        <p class="eyebrow">Section 3.1 · Project Registry</p>
+        <h1>项目登记表，不是新的 workflow。</h1>
+        <p class="hero-copy">
+          这一节要让人类先看懂一件事：多项目不是先加很多 worker，也不是先做新首页。
+          第一步是让 Symphony 有一张可靠的“项目名单”，并且这张名单成为项目身份的唯一来源。
+        </p>
+      </div>
+
+      <aside class="card hero-side">
+        <div>
+          <p class="plain-title">一句话理解</p>
+          <p class="big-answer">Project Registry = Symphony 的项目户口本。</p>
+        </div>
+        <div class="callout">
+          它回答：有哪些项目？每个项目对应哪个 Linear project？这个项目是否启用？最多同时跑几个 agent？
+        </div>
+      </aside>
+    </section>
+
+    <section class="card section">
+      <h2>原来已经有什么？需要新增什么？</h2>
+      <div class="flow">
+        <div class="mini-card">
+          <span class="tag tag-old">原本已有</span>
+          <h3>单项目配置</h3>
+          <p>现在的系统只有一个 Linear project，所以很多地方默认“不需要问这是哪个项目”。</p>
+          <div class="mono-box">tracker:
+  kind: linear
+  project_slug: "one-project"</div>
+        </div>
+
+        <div class="flow-arrow">→</div>
+
+        <div class="mini-card">
+          <span class="tag tag-new">需要新增</span>
+          <h3>多项目登记表</h3>
+          <p>未来系统需要知道多个项目，并且每个项目都有稳定身份。</p>
+          <div class="mono-box">projects:
+  - project_key: "project-a"
+    enabled: true
+    max_concurrent_agents: 15
+  - project_key: "project-b"
+    enabled: false
+    max_concurrent_agents: 15</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2>Project Registry 只管“项目身份”</h2>
+      <table class="field-table">
+        <thead>
+          <tr>
+            <th>它登记什么</th>
+            <th>人类怎么理解</th>
+            <th>为什么重要</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>project_key</code></td>
+            <td>项目的 canonical key，V0.1 直接复用 Linear project slug</td>
+            <td>workspace、API、日志、调度 key、Linear 绑定都靠它避免串项目</td>
+          </tr>
+          <tr>
+            <td><code>display_name</code></td>
+            <td>从 Linear project name 读出来的展示名</td>
+            <td>方便观察，不写回配置，也不作为程序判断依据</td>
+          </tr>
+          <tr>
+            <td><code>enabled</code></td>
+            <td>这个项目是否参与调度</td>
+            <td>可以暂停单个项目，不影响其他项目</td>
+          </tr>
+          <tr>
+            <td><code>max_concurrent_agents</code></td>
+            <td>这个项目最多同时跑几个 agent</td>
+            <td>防止一个项目吃完整个共享池，默认建议 15</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="card section">
+      <h2>它不管什么？</h2>
+      <div class="compare">
+        <div class="mini-card">
+          <span class="tag tag-new">正确边界</span>
+          <h3>Workflow 仍然共享</h3>
+          <p>所有项目还是使用同一套 <code>WORKFLOW.md</code>、prompt、hooks、agent/codex 默认规则。</p>
+          <div class="diagram">
+            <div class="node"><strong>WORKFLOW.md</strong>：怎么做事</div>
+            <div class="vertical-arrow">↓</div>
+            <div class="node"><strong>Project Registry</strong>：有哪些项目</div>
+          </div>
+        </div>
+
+        <div class="mini-card">
+          <span class="tag tag-risk">错误理解</span>
+          <h3>不是每项目一套 workflow</h3>
+          <p>不要把 Project Registry 做成 per-project workflow 的入口。那会把范围扩大成另一套平台。</p>
+          <div class="diagram">
+            <div class="node bad"><strong>Project A</strong>：Workflow A</div>
+            <div class="node bad"><strong>Project B</strong>：Workflow B</div>
+            <div class="node bad"><strong>Project C</strong>：Workflow C</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2>为什么不能只在首页加项目标签？</h2>
+      <div class="compare">
+        <div class="mini-card">
+          <span class="tag tag-risk">只在 UI 贴标签</span>
+          <h3>看起来知道项目，底层可能不知道</h3>
+          <div class="mono-box">&lt;Issue id="123" label="Project A" /&gt;</div>
+          <p>如果 workspace、retry、cleanup 不知道 project，后面还是可能串线。</p>
+        </div>
+
+        <div class="mini-card">
+          <span class="tag tag-new">从出生就带身份</span>
+          <h3>issue 一被拉取就带 ProjectContext</h3>
+          <div class="mono-box">&lt;Issue&gt;
+  &lt;ProjectKey&gt;project-a&lt;/ProjectKey&gt;
+  &lt;DisplayName&gt;项目 A&lt;/DisplayName&gt;
+  &lt;IssueId&gt;123&lt;/IssueId&gt;
+&lt;/Issue&gt;</div>
+          <p>这样调度、workspace、日志、API、首页都可以追溯到同一个项目。</p>
+        </div>
+      </div>
+      <div class="callout danger">
+        这就是 3.1 的核心风险：如果项目身份只在展示层存在，那它不能保护 workspace，也不能保护 cleanup。
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2>配置态和运行态要分开</h2>
+      <div class="compare">
+        <div class="mini-card">
+          <span class="tag tag-blue">Project Registry Config</span>
+          <h3>稳定配置</h3>
+          <p>这些是人工配置或启动时规范化出来的项目名单。</p>
+          <div class="mono-box">project_key: "project-a"
+enabled: true
+max_concurrent_agents: 15</div>
+        </div>
+
+        <div class="mini-card">
+          <span class="tag tag-old">Project Runtime State</span>
+          <h3>运行中变化</h3>
+          <p>这些是运行时产生的状态，不应该写回项目登记表。</p>
+          <div class="mono-box">last_error_class: "rate_limit"
+backoff_until: "2026-05-24T12:00:00Z"
+last_poll_ok_at: "..."</div>
+        </div>
+      </div>
+      <div class="callout">
+        人类理解：户口本不要写“今天感冒了”。项目登记表记录身份和配置开关，运行状态记录现在发生了什么。全局默认上限是 20，每项目默认上限是 15。展示名从 Linear project name 读，不写回户口本。
+      </div>
+    </section>
+
+    <section class="card section">
+      <h2>讨论 3.1 时，人类只需要先确认这五件事</h2>
+      <div class="checklist">
+        <div class="check"><span>01</span><code>project_key</code> 直接复用哪个 Linear project slug？</div>
+        <div class="check"><span>02</span><code>display_name</code> 是否只从 Linear project name 投影？</div>
+        <div class="check"><span>03</span>旧的 <code>tracker.project_slug</code> 怎么迁移？</div>
+        <div class="check"><span>04</span>每项目默认并发上限是多少？</div>
+        <div class="check"><span>05</span>Project Registry 放在哪里？</div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
