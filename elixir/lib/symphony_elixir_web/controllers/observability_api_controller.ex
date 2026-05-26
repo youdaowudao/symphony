@@ -19,6 +19,20 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
       {:ok, payload} ->
         json(conn, payload)
 
+      {:error, {:project_scope_required, message}} ->
+        error_response(conn, 409, "project_scope_required", message)
+
+      {:error, :issue_not_found} ->
+        error_response(conn, 404, "issue_not_found", "Issue not found")
+    end
+  end
+
+  @spec project_issue(Conn.t(), map()) :: Conn.t()
+  def project_issue(conn, %{"project_key" => project_key, "issue_identifier" => issue_identifier}) do
+    case Presenter.project_issue_payload(project_key, issue_identifier, orchestrator(), snapshot_timeout_ms()) do
+      {:ok, payload} ->
+        json(conn, payload)
+
       {:error, :issue_not_found} ->
         error_response(conn, 404, "issue_not_found", "Issue not found")
     end

@@ -5,13 +5,14 @@
 │ Runtime: 1m 15s
 │ Tokens: in 90 | out 12 | total 102
 │ Rate Limits: priority-tier | primary 100/100 reset 1s | secondary 500/500 reset 1s | credits unlimited
-│ Project: https://linear.app/project/project/issues
+│ Projects: enabled 0 / active 0
+│ Tracker: n/a
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
-│   ───────────────────────────────────────────────────────────────────────
-│ ● MT-777   running        4242     1m 15s / 7        3,200 thre...567890
+│   ID             STAGE          PID      AGE / TURN   TOKENS     SESSION
+│   ─────────────────────────────────────────────────────────────────────────────
+│ ● MT-777         running        4242     1m 15s / 7        3,200 thre...567890
 │   latest event: thread token usage updated (in 90, out 12, total 102)                             · 1 分钟前更新
 │
 ├─ Backoff queue

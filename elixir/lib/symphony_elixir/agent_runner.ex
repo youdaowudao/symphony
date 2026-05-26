@@ -54,12 +54,6 @@ defmodule SymphonyElixir.AgentRunner do
     end
   end
 
-  defp codex_message_handler(recipient, issue) do
-    fn message ->
-      send_codex_update(recipient, issue, message)
-    end
-  end
-
   defp send_codex_update(recipient, %Issue{id: issue_id}, message)
        when is_binary(issue_id) and is_pid(recipient) do
     send(recipient, {:codex_worker_update, issue_id, message})
@@ -67,6 +61,20 @@ defmodule SymphonyElixir.AgentRunner do
   end
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
+
+  defp codex_message_handler(recipient, issue, opts) do
+    fn message ->
+      send_codex_update(recipient, issue, message, opts)
+    end
+  end
+
+  defp send_codex_update(recipient, %Issue{id: issue_id}, message, opts)
+       when is_binary(issue_id) and is_pid(recipient) and is_list(opts) and is_map(message) do
+    send(recipient, {:codex_worker_update, issue_id, Map.put_new(message, :project_key, Keyword.get(opts, :project_key))})
+    :ok
+  end
+
+  defp send_codex_update(recipient, issue, message, _opts), do: send_codex_update(recipient, issue, message)
 
   defp send_worker_runtime_info(recipient, %Issue{id: issue_id, identifier: issue_identifier}, worker_host, workspace, opts)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
@@ -129,11 +137,11 @@ defmodule SymphonyElixir.AgentRunner do
     prompt = build_turn_prompt(issue, opts, turn_number, max_turns)
 
     with {:ok, turn_session} <-
-           AppServer.run_turn(
+             AppServer.run_turn(
              app_session,
              prompt,
              issue,
-             on_message: codex_message_handler(codex_update_recipient, issue)
+             on_message: codex_message_handler(codex_update_recipient, issue, opts)
            ) do
       Logger.info("Completed agent run for #{issue_context(issue)} session_id=#{turn_session[:session_id]} workspace=#{workspace} turn=#{turn_number}/#{max_turns}")
 

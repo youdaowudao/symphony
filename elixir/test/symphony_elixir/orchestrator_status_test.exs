@@ -276,6 +276,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       ref: make_ref(),
       identifier: issue.identifier,
       issue: issue,
+      project_key: "project-a",
       session_id: nil,
       turn_count: 0,
       last_codex_message: nil,
@@ -316,6 +317,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     snapshot = GenServer.call(pid, :snapshot)
     assert %{running: [snapshot_entry]} = snapshot
     assert snapshot_entry.issue_id == issue_id
+    assert snapshot_entry.project_key == "project-a"
     assert snapshot_entry.session_id == "thread-live-turn-live"
     assert snapshot_entry.turn_count == 1
     assert snapshot_entry.last_codex_timestamp == now
@@ -1365,6 +1367,124 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
   end
 
+  test "snapshot projects fall back to project_key instead of registry display_name" do
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: "Project A", enabled: true, max_concurrent_agents: 15},
+      %{project_key: "project-b", display_name: "Project B", enabled: true, max_concurrent_agents: 15}
+    ])
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    orchestrator_name = Module.concat(__MODULE__, :SnapshotProjectsDisplayNameOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+    assert snapshot.projects == [
+             %{
+               project_key: "project-a",
+               project_display_name: "project-a",
+               running_count: 0,
+               retrying_count: 0,
+               blocked_count: 0
+             },
+             %{
+               project_key: "project-b",
+               project_display_name: "project-b",
+               running_count: 0,
+               retrying_count: 0,
+               blocked_count: 0
+             }
+           ]
+
+    assert_receive :project_registry_normalized_entries_called
+  end
+
+  test "snapshot projects only include enabled registry projects" do
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15},
+      %{project_key: "project-b", display_name: nil, enabled: false, max_concurrent_agents: 15}
+    ])
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    orchestrator_name = Module.concat(__MODULE__, :SnapshotProjectsEnabledOnlyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+    assert snapshot.projects == [
+             %{
+               project_key: "project-a",
+               project_display_name: "project-a",
+               running_count: 0,
+               retrying_count: 0,
+               blocked_count: 0
+             }
+           ]
+
+    assert_receive :project_registry_normalized_entries_called
+  end
+
+  test "non-exhausted codex rate limits remain visible after stale observed_at timestamps" do
+    orchestrator_name = Module.concat(__MODULE__, :NonExhaustedRateLimitsVisibilityOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    observed_at_ms = System.monotonic_time(:millisecond) - 60_000
+
+    rate_limits = %{
+      "limit_id" => "codex",
+      "primary" => %{"remaining" => 90, "limit" => 100, "reset_in_seconds" => 1},
+      "secondary" => %{"remaining" => 50, "limit" => 60, "reset_in_seconds" => 1},
+      "credits" => %{"has_credits" => true, "unlimited" => false}
+    }
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        codex_rate_limits: rate_limits,
+        codex_rate_limits_observed_at_ms: observed_at_ms
+      })
+    end)
+
+    snapshot = Orchestrator.snapshot(orchestrator_name, 1_000)
+
+    assert snapshot.rate_limits == rate_limits
+  end
+
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
     issue_id = "issue-token-precedence"
 
@@ -1625,7 +1745,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       timer_ref: nil,
       due_at_ms: System.monotonic_time(:millisecond) + 5_000,
       identifier: "MT-500",
-      error: "agent exited: :boom"
+      error: "agent exited: :boom",
+      project_key: "project-a"
     }
 
     initial_state = :sys.get_state(pid)
@@ -1638,6 +1759,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert [
              %{
                issue_id: "mt-500",
+               project_key: "project-a",
                attempt: 2,
                due_in_ms: due_in_ms,
                identifier: "MT-500",
@@ -3196,7 +3318,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute rendered =~ "Timestamp:"
   end
 
-  test "status dashboard renders linear project link in header" do
+  test "status dashboard renders multi-project header summary without single-project tracker link" do
     snapshot_data =
       {:ok,
        %{
@@ -3208,7 +3330,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
-    assert rendered =~ "https://linear.app/project/project/issues"
+    assert rendered =~ "│ Projects:"
+    assert rendered =~ "enabled 0 / active 0"
+    assert rendered =~ "│ Tracker:"
+    assert rendered =~ "n/a"
     refute rendered =~ "Dashboard:"
   end
 
@@ -3236,8 +3361,10 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     rendered = StatusDashboard.format_snapshot_content_for_test(snapshot_data, 0.0)
 
-    assert rendered =~ "│ Project:"
-    assert rendered =~ "https://linear.app/project/project/issues"
+    assert rendered =~ "│ Projects:"
+    assert rendered =~ "enabled 0 / active 0"
+    assert rendered =~ "│ Tracker:"
+    assert rendered =~ "n/a"
     assert rendered =~ "│ Dashboard:"
     assert rendered =~ "http://127.0.0.1:4000/"
   end

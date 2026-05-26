@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Config, Orchestrator, RuntimeStatus, StatusDashboard}
+  alias SymphonyElixir.{Orchestrator, RuntimeStatus, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -12,6 +12,10 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
+        running = Enum.map(snapshot.running, &running_entry_payload(&1, generated_at_datetime))
+        retrying = Enum.map(snapshot.retrying, &retry_entry_payload/1)
+        blocked = Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload(&1, generated_at_datetime))
+
         %{
           generated_at: generated_at,
           counts: %{
@@ -19,9 +23,10 @@ defmodule SymphonyElixirWeb.Presenter do
             retrying: length(snapshot.retrying),
             blocked: length(Map.get(snapshot, :blocked, []))
           },
-          running: Enum.map(snapshot.running, &running_entry_payload(&1, generated_at_datetime)),
-          retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
-          blocked: Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload(&1, generated_at_datetime)),
+          projects: projects_payload(Map.get(snapshot, :projects, []), running, retrying, blocked),
+          running: running,
+          retrying: retrying,
+          blocked: blocked,
           codex_totals: snapshot.codex_totals,
           rate_limits: snapshot.rate_limits
         }
@@ -34,15 +39,45 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
-  @spec issue_payload(String.t(), GenServer.name(), timeout()) :: {:ok, map()} | {:error, :issue_not_found}
+  @spec issue_payload(String.t(), GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, :issue_not_found} | {:error, {:project_scope_required, String.t()}}
   def issue_payload(issue_identifier, orchestrator, snapshot_timeout_ms) when is_binary(issue_identifier) do
     generated_at_datetime = DateTime.utc_now() |> DateTime.truncate(:second)
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
-        running = Enum.find(snapshot.running, &(&1.identifier == issue_identifier))
-        retry = Enum.find(snapshot.retrying, &(&1.identifier == issue_identifier))
-        blocked = Enum.find(Map.get(snapshot, :blocked, []), &(&1.identifier == issue_identifier))
+        case issue_matches(snapshot, issue_identifier) do
+          [] ->
+            {:error, :issue_not_found}
+
+          :project_scope_required ->
+            {:error,
+             {:project_scope_required,
+              "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
+
+          [{running, retry, blocked}] ->
+            {:ok, issue_payload_body(issue_identifier, running, retry, blocked, generated_at_datetime)}
+
+          _matches ->
+            {:error,
+             {:project_scope_required,
+              "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
+        end
+
+      _ ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  @spec project_issue_payload(String.t(), String.t(), GenServer.name(), timeout()) ::
+          {:ok, map()} | {:error, :issue_not_found}
+  def project_issue_payload(project_key, issue_identifier, orchestrator, snapshot_timeout_ms)
+      when is_binary(project_key) and is_binary(issue_identifier) do
+    generated_at_datetime = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
+      %{} = snapshot ->
+        {running, retry, blocked} = project_issue_entries(snapshot, project_key, issue_identifier)
 
         if is_nil(running) and is_nil(retry) and is_nil(blocked) do
           {:error, :issue_not_found}
@@ -67,13 +102,18 @@ defmodule SymphonyElixirWeb.Presenter do
   end
 
   defp issue_payload_body(issue_identifier, running, retry, blocked, now) do
+    project_key = project_key_from_entries(running, retry, blocked)
+    project_display_name = project_display_name_from_entries(running, retry, blocked, project_key)
+
     %{
+      project_key: project_key,
+      project_display_name: project_display_name,
       issue_identifier: issue_identifier,
       issue_id: issue_id_from_entries(running, retry, blocked),
       status: issue_status(running, retry, blocked),
       runtime_status: runtime_status(running, retry, blocked, now),
       workspace: %{
-        path: workspace_path(issue_identifier, running, retry, blocked),
+        path: workspace_path(running, retry, blocked),
         host: workspace_host(running, retry, blocked)
       },
       attempts: %{
@@ -95,6 +135,16 @@ defmodule SymphonyElixirWeb.Presenter do
   defp issue_id_from_entries(running, retry, blocked),
     do: (running && running.issue_id) || (retry && retry.issue_id) || (blocked && blocked.issue_id)
 
+  defp project_key_from_entries(running, retry, blocked),
+    do: (running && Map.get(running, :project_key)) || (retry && Map.get(retry, :project_key)) || (blocked && Map.get(blocked, :project_key))
+
+  defp project_display_name_from_entries(running, retry, blocked, fallback) do
+    (running && Map.get(running, :project_display_name)) ||
+      (retry && Map.get(retry, :project_display_name)) ||
+      (blocked && Map.get(blocked, :project_display_name)) ||
+      fallback
+  end
+
   defp restart_count(retry), do: max(retry_attempt(retry) - 1, 0)
   defp retry_attempt(nil), do: 0
   defp retry_attempt(retry), do: retry.attempt || 0
@@ -112,6 +162,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp running_entry_payload(entry, now) do
     %{
+      project_key: Map.get(entry, :project_key),
+      project_display_name: entry_project_display_name(entry),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
@@ -134,10 +186,13 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp retry_entry_payload(entry) do
     %{
+      project_key: Map.get(entry, :project_key),
+      project_display_name: entry_project_display_name(entry),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       attempt: entry.attempt,
       due_at: due_at_iso8601(entry.due_in_ms),
+      last_event_at: iso8601(Map.get(entry, :last_codex_timestamp)),
       error: entry.error,
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path)
@@ -146,6 +201,8 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp blocked_entry_payload(entry, now) do
     %{
+      project_key: Map.get(entry, :project_key),
+      project_display_name: entry_project_display_name(entry),
       issue_id: entry.issue_id,
       issue_identifier: entry.identifier,
       state: entry.state,
@@ -206,11 +263,10 @@ defmodule SymphonyElixirWeb.Presenter do
     }
   end
 
-  defp workspace_path(issue_identifier, running, retry, blocked) do
+  defp workspace_path(running, retry, blocked) do
     (running && Map.get(running, :workspace_path)) ||
       (retry && Map.get(retry, :workspace_path)) ||
-      (blocked && Map.get(blocked, :workspace_path)) ||
-      Path.join(Config.settings!().workspace.root, issue_identifier)
+      (blocked && Map.get(blocked, :workspace_path))
   end
 
   defp workspace_host(running, retry, blocked) do
@@ -234,6 +290,90 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
+
+  defp project_summary_payload(entry) do
+    %{
+      project_key: entry.project_key,
+      project_display_name: Map.get(entry, :project_display_name) || entry.project_key,
+      running_count: Map.get(entry, :running_count, 0),
+      retrying_count: Map.get(entry, :retrying_count, 0),
+      blocked_count: Map.get(entry, :blocked_count, 0)
+    }
+  end
+
+  defp projects_payload([], running, retrying, blocked) do
+    project_keys =
+      (running ++ retrying ++ blocked)
+      |> Enum.map(&entry_project_key/1)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.map(project_keys, fn project_key ->
+      %{
+        project_key: project_key,
+        project_display_name: project_key,
+        running_count: Enum.count(running, &(entry_project_key(&1) == project_key)),
+        retrying_count: Enum.count(retrying, &(entry_project_key(&1) == project_key)),
+        blocked_count: Enum.count(blocked, &(entry_project_key(&1) == project_key))
+      }
+    end)
+  end
+
+  defp projects_payload(projects, running, retrying, blocked) when is_list(projects) do
+    Enum.map(projects, fn entry ->
+      payload = project_summary_payload(entry)
+      project_key = payload.project_key
+
+      %{
+        payload
+        | running_count: Enum.count(running, &(entry_project_key(&1) == project_key)),
+          retrying_count: Enum.count(retrying, &(entry_project_key(&1) == project_key)),
+          blocked_count: Enum.count(blocked, &(entry_project_key(&1) == project_key))
+      }
+    end)
+  end
+
+  defp entry_project_key(entry) when is_map(entry) do
+    Map.get(entry, :project_key) || Map.get(entry, "project_key")
+  end
+
+  defp entry_project_display_name(entry) when is_map(entry) do
+    Map.get(entry, :project_display_name) || Map.get(entry, :project_key)
+  end
+
+  defp issue_matches(snapshot, issue_identifier) do
+    running_matches = Enum.filter(snapshot.running, &(Map.get(&1, :identifier) == issue_identifier))
+    retry_matches = Enum.filter(snapshot.retrying, &(Map.get(&1, :identifier) == issue_identifier))
+    blocked_matches = Enum.filter(Map.get(snapshot, :blocked, []), &(Map.get(&1, :identifier) == issue_identifier))
+
+    matches = running_matches ++ retry_matches ++ blocked_matches
+    missing_project_scope? = Enum.any?(matches, &is_nil(Map.get(&1, :project_key)))
+
+    project_keys =
+      matches
+      |> Enum.map(&Map.get(&1, :project_key))
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    cond do
+      matches == [] ->
+        []
+
+      missing_project_scope? ->
+        :project_scope_required
+
+      true ->
+        Enum.map(project_keys, fn project_key -> project_issue_entries(snapshot, project_key, issue_identifier) end)
+    end
+  end
+
+  defp project_issue_entries(snapshot, project_key, issue_identifier) do
+    {
+      Enum.find(snapshot.running, &(Map.get(&1, :project_key) == project_key and Map.get(&1, :identifier) == issue_identifier)),
+      Enum.find(snapshot.retrying, &(Map.get(&1, :project_key) == project_key and Map.get(&1, :identifier) == issue_identifier)),
+      Enum.find(Map.get(snapshot, :blocked, []), &(Map.get(&1, :project_key) == project_key and Map.get(&1, :identifier) == issue_identifier))
+    }
+  end
 
   defp due_at_iso8601(due_in_ms) when is_integer(due_in_ms) do
     DateTime.utc_now()

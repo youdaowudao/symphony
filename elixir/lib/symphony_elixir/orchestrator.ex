@@ -802,16 +802,41 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_snapshot_entry(now_ms, runtime_identity, %{attempt: attempt, due_at_ms: due_at_ms} = retry) do
     %{
       issue_id: runtime_snapshot_issue_id(runtime_identity),
+      project_key: Map.get(retry, :project_key) || runtime_project_key(runtime_identity),
       attempt: attempt,
       due_in_ms: max(0, due_at_ms - now_ms),
       identifier: Map.get(retry, :identifier),
       error: Map.get(retry, :error),
+      last_codex_timestamp: Map.get(retry, :last_codex_timestamp),
       worker_host: Map.get(retry, :worker_host),
       workspace_path: Map.get(retry, :workspace_path)
     }
   end
 
   defp retry_snapshot_entry(_now_ms, _runtime_identity, _retry), do: nil
+
+  defp snapshot_projects(running, retrying, blocked) do
+    project_registry_entries()
+    |> Enum.filter(&Map.get(&1, :enabled, false))
+    |> Enum.map(fn entry ->
+      project_key = entry.project_key
+
+      %{
+        project_key: project_key,
+        project_display_name: project_key,
+        running_count: Enum.count(running, &(Map.get(&1, :project_key) == project_key)),
+        retrying_count: Enum.count(retrying, &(Map.get(&1, :project_key) == project_key)),
+        blocked_count: Enum.count(blocked, &(Map.get(&1, :project_key) == project_key))
+      }
+    end)
+  end
+
+  defp project_registry_entries do
+    case project_registry_module().normalized_entries() do
+      {:ok, entries} when is_list(entries) -> entries
+      _ -> []
+    end
+  end
 
   defp reconcile_runtime_issue_state(runtime_key, %Issue{} = issue, state, active_states, terminal_states) do
     cond do
@@ -1529,6 +1554,7 @@ defmodule SymphonyElixir.Orchestrator do
             issue_identifier: metadata[:issue_identifier] || identifier,
             worker_host: worker_host,
             workspace_path: workspace_path,
+            last_codex_timestamp: metadata[:last_codex_timestamp] || Map.get(previous_retry, :last_codex_timestamp),
             last_attempt: metadata[:attempt] || next_attempt
           }),
         claimed:
@@ -2287,6 +2313,7 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: runtime_snapshot_issue_id(runtime_identity),
           identifier: metadata.identifier,
+          project_key: Map.get(metadata, :project_key) || runtime_project_key(runtime_identity),
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
@@ -2315,6 +2342,7 @@ defmodule SymphonyElixir.Orchestrator do
         %{
           issue_id: runtime_snapshot_issue_id(runtime_identity),
           identifier: Map.get(metadata, :identifier),
+          project_key: Map.get(metadata, :project_key) || runtime_project_key(runtime_identity),
           state: blocked_issue_state(metadata),
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
@@ -2332,6 +2360,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
+       projects: snapshot_projects(running, retrying, blocked),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
        polling: %{
@@ -2495,10 +2524,20 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp refresh_codex_rate_limits(%State{} = state) do
-    if codex_rate_limit_active?(state) do
-      state
-    else
-      %{state | codex_rate_limits: nil, codex_rate_limits_observed_at_ms: nil}
+    rate_limits = Map.get(state, :codex_rate_limits)
+
+    cond do
+      not is_map(rate_limits) ->
+        %{state | codex_rate_limits: nil, codex_rate_limits_observed_at_ms: nil}
+
+      codex_rate_limit_active?(state) ->
+        state
+
+      codex_rate_limit_active?(rate_limits) ->
+        %{state | codex_rate_limits: nil, codex_rate_limits_observed_at_ms: nil}
+
+      true ->
+        state
     end
   end
 

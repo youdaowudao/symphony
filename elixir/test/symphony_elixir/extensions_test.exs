@@ -512,7 +512,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
-    {:ok, _pid} =
+    {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
         name: orchestrator_name,
         snapshot: snapshot,
@@ -532,8 +532,26 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
              "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "projects" => [
+               %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
+                 "running_count" => 1,
+                 "retrying_count" => 1,
+                 "blocked_count" => 1
+               },
+               %{
+                 "project_key" => "project-b",
+                 "project_display_name" => "project-b",
+                 "running_count" => 0,
+                 "retrying_count" => 0,
+                 "blocked_count" => 0
+               }
+             ],
              "running" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
                  "state" => "In Progress",
@@ -551,24 +569,29 @@ defmodule SymphonyElixir.ExtensionsTest do
              ],
              "retrying" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
-                 "attempt" => 2,
-                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                 "error" => "boom",
-                 "worker_host" => nil,
-                 "workspace_path" => nil
-               }
-             ],
+                  "attempt" => 2,
+                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
+                  "last_event_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("last_event_at"),
+                  "error" => "boom",
+                  "worker_host" => "dm-dev2",
+                  "workspace_path" => "/workspaces/project-a/MT-RETRY"
+                }
+              ],
              "blocked" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-blocked",
                  "issue_identifier" => "MT-BLOCKED",
                  "state" => "In Progress",
                  "runtime_status" => "waiting_input",
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
-                 "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "workspace_path" => "/workspaces/project-a/MT-BLOCKED",
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
@@ -585,16 +608,18 @@ defmodule SymphonyElixir.ExtensionsTest do
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 
-    conn = get(build_conn(), "/api/v1/MT-HTTP")
+    conn = get(build_conn(), "/api/v1/projects/project-a/issues/MT-HTTP")
     issue_payload = json_response(conn, 200)
 
     assert issue_payload == %{
+             "project_key" => "project-a",
+             "project_display_name" => "project-a",
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
              "status" => "running",
              "runtime_status" => "running",
              "workspace" => %{
-               "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
+               "path" => nil,
                "host" => nil
              },
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
@@ -625,14 +650,32 @@ defmodule SymphonyElixir.ExtensionsTest do
              "tracked" => %{}
            }
 
+    conn = get(build_conn(), "/api/v1/MT-HTTP")
+
+    assert %{
+             "project_key" => "project-a",
+             "project_display_name" => "project-a",
+             "issue_identifier" => "MT-HTTP"
+           } = json_response(conn, 200)
+
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "project_key" => "project-a",
+             "status" => "retrying",
+             "retry" => %{
+               "attempt" => 2,
+               "error" => "boom",
+               "worker_host" => "dm-dev2",
+               "workspace_path" => "/workspaces/project-a/MT-RETRY"
+             }
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-BLOCKED")
 
     assert %{
+             "project_key" => "project-a",
              "status" => "blocked",
              "last_error" => "codex turn requires operator input",
              "blocked" => %{
@@ -643,10 +686,145 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
            } = json_response(conn, 200)
 
+    conflict_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-project-b",
+            identifier: "MT-HTTP",
+            project_key: "project-b",
+            state: "In Progress",
+            worker_host: "dm-dev9",
+            workspace_path: "/workspaces/project-b/MT-HTTP",
+            session_id: "thread-http-b",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, conflict_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-HTTP")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" =>
+                 "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
+           }
+
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
     assert json_response(conn, 404) == %{
              "error" => %{"code" => "issue_not_found", "message" => "Issue not found"}
+           }
+
+    missing_project_key_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-missing-project",
+            identifier: "MT-NOPROJECT",
+            project_key: nil,
+            state: "In Progress",
+            worker_host: nil,
+            workspace_path: nil,
+            session_id: "thread-http-missing-project",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "missing project key",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 0,
+            codex_output_tokens: 0,
+            codex_total_tokens: 0,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, missing_project_key_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-NOPROJECT")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" =>
+                 "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
+           }
+
+    mixed_project_scope_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-mixed-scope-with-project",
+            identifier: "MT-MIXEDSCOPE",
+            project_key: "project-a",
+            state: "In Progress",
+            worker_host: "dm-dev10",
+            workspace_path: "/workspaces/project-a/MT-MIXEDSCOPE",
+            session_id: "thread-http-mixed-a",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "project scoped duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          },
+          %{
+            issue_id: "issue-http-mixed-scope-without-project",
+            identifier: "MT-MIXEDSCOPE",
+            project_key: nil,
+            state: "In Progress",
+            worker_host: "dm-dev11",
+            workspace_path: nil,
+            session_id: "thread-http-mixed-missing",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "missing scope duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, mixed_project_scope_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-MIXEDSCOPE")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" =>
+                 "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
            }
 
     conn = post(build_conn(), "/api/v1/refresh", %{})
@@ -772,13 +950,17 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
-    assert html =~ "turn blocked: waiting for user input"
+    assert html =~ "Current exceptions"
+    assert html =~ "codex turn requires operator input"
     assert html =~ "waiting_input"
     assert html =~ "Runtime"
     assert html =~ "Live"
     assert html =~ "Offline"
     assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "Projects"
+    assert html =~ "todo pool / blocked-by"
+    assert html =~ "project-a"
+    assert html =~ "/api/v1/projects/project-a/issues/MT-HTTP"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
@@ -918,10 +1100,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     now = DateTime.utc_now()
 
     %{
+      projects: [
+        %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15},
+        %{project_key: "project-b", display_name: nil, enabled: true, max_concurrent_agents: 15}
+      ],
       running: [
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          project_key: "project-a",
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
@@ -939,7 +1126,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
+          project_key: "project-a",
           attempt: 2,
+          worker_host: "dm-dev2",
+          workspace_path: "/workspaces/project-a/MT-RETRY",
           due_in_ms: 2_000,
           error: "boom"
         }
@@ -948,10 +1138,11 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-blocked",
           identifier: "MT-BLOCKED",
+          project_key: "project-a",
           state: "In Progress",
           error: "codex turn requires operator input",
           worker_host: "dm-dev2",
-          workspace_path: "/workspaces/MT-BLOCKED",
+          workspace_path: "/workspaces/project-a/MT-BLOCKED",
           session_id: "thread-blocked",
           blocked_at: DateTime.utc_now(),
           last_codex_event: :turn_input_required,

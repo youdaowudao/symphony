@@ -1604,6 +1604,7 @@ defmodule SymphonyElixir.CoreTest do
 
       assert_receive {:codex_worker_update, "issue-live-updates",
                       %{
+                        project_key: "project-a",
                         event: :session_started,
                         timestamp: %DateTime{},
                         session_id: session_id

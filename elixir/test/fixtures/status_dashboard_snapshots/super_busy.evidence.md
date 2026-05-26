@@ -5,15 +5,16 @@
 │ Runtime: 72m 1s
 │ Tokens: in 250,000 | out 18,500 | total 268,500
 │ Rate Limits: gpt-5 | primary 12,345/20,000 reset 30s | secondary 45/60 reset 12s | credits 9876.50
-│ Project: https://linear.app/project/project/issues
+│ Projects: enabled 0 / active 0
+│ Tracker: n/a
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
-│   ───────────────────────────────────────────────────────────────────────
-│ ● MT-101   completed      4242     13m 5s / 11     120,450 thre...567890
+│   ID             STAGE          PID      AGE / TURN   TOKENS     SESSION
+│   ─────────────────────────────────────────────────────────────────────────────
+│ ● MT-101         completed      4242     13m 5s / 11     120,450 thre...567890
 │   latest event: turn completed (completed)                                                        · 3 分钟前更新
-│ ● MT-102   running        5252     6m 52s / 4       89,200 thre...567890
+│ ● MT-102         running        5252     6m 52s / 4       89,200 thre...567890
 │   latest event: mix test --cover                                                                  · 6 分钟前更新
 │
 ├─ Backoff queue
