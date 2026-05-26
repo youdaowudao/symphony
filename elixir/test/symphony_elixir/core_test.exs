@@ -384,7 +384,8 @@ defmodule SymphonyElixir.CoreTest do
 
     issue_id = "issue-2"
     issue_identifier = "MT-556"
-    workspace = Path.join(test_root, issue_identifier)
+    runtime_key = {"project-a", issue_id}
+    workspace = Path.join([test_root, "project-a", "MT-556__issue2"])
 
     try do
       write_workflow_file!(Workflow.workflow_file_path(),
@@ -394,7 +395,16 @@ defmodule SymphonyElixir.CoreTest do
       )
 
       File.mkdir_p!(test_root)
-      File.mkdir_p!(workspace)
+
+      dispatch_context = %{
+        project_key: "project-a",
+        issue_id: issue_id,
+        issue_identifier: issue_identifier,
+        worker_host: nil,
+        attempt: 1
+      }
+
+      assert {:ok, ^workspace} = Workspace.prepare_dispatch_workspace(dispatch_context)
 
       agent_pid =
         spawn(fn ->
@@ -405,15 +415,20 @@ defmodule SymphonyElixir.CoreTest do
 
       state = %Orchestrator.State{
         running: %{
-          issue_id => %{
+          runtime_key => %{
             pid: agent_pid,
             ref: nil,
             identifier: issue_identifier,
+            issue_identifier: issue_identifier,
+            issue_id: issue_id,
+            project_key: "project-a",
+            workspace_path: workspace,
+            attempt: 1,
             issue: %Issue{id: issue_id, state: "In Progress", identifier: issue_identifier},
             started_at: DateTime.utc_now()
           }
         },
-        claimed: MapSet.new([issue_id]),
+        claimed: MapSet.new([runtime_key]),
         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
         retry_attempts: %{}
       }
@@ -429,8 +444,8 @@ defmodule SymphonyElixir.CoreTest do
 
       updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
-      refute Map.has_key?(updated_state.running, issue_id)
-      refute MapSet.member?(updated_state.claimed, issue_id)
+      refute Map.has_key?(updated_state.running, runtime_key)
+      refute MapSet.member?(updated_state.claimed, runtime_key)
       refute Process.alive?(agent_pid)
       refute File.exists?(workspace)
     after
@@ -518,13 +533,17 @@ defmodule SymphonyElixir.CoreTest do
 
   test "reconcile updates running issue state for active issues" do
     issue_id = "issue-3"
+    runtime_key = {"project-a", issue_id}
 
     state = %Orchestrator.State{
       running: %{
-        issue_id => %{
+        runtime_key => %{
           pid: self(),
           ref: nil,
           identifier: "MT-557",
+          issue_identifier: "MT-557",
+          issue_id: issue_id,
+          project_key: "project-a",
           issue: %Issue{
             id: issue_id,
             identifier: "MT-557",
@@ -533,7 +552,7 @@ defmodule SymphonyElixir.CoreTest do
           started_at: DateTime.utc_now()
         }
       },
-      claimed: MapSet.new([issue_id]),
+      claimed: MapSet.new([runtime_key]),
       codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
       retry_attempts: %{}
     }
@@ -548,11 +567,105 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
-    updated_entry = updated_state.running[issue_id]
+    updated_entry = updated_state.running[runtime_key]
 
-    assert Map.has_key?(updated_state.running, issue_id)
-    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert Map.has_key?(updated_state.running, runtime_key)
+    assert MapSet.member?(updated_state.claimed, runtime_key)
     assert updated_entry.issue.state == "In Progress"
+  end
+
+  test "reconcile keeps running issue state isolated across projects sharing the same issue id" do
+    issue_id = "shared-running-issue"
+    project_a_key = {"project-a", issue_id}
+    project_b_key = {"project-b", issue_id}
+
+    state = %Orchestrator.State{
+      running: %{
+        project_a_key => %{
+          pid: self(),
+          ref: nil,
+          identifier: "PROJECT-A-RUN",
+          issue_identifier: "PROJECT-A-RUN",
+          issue_id: issue_id,
+          project_key: "project-a",
+          issue: %Issue{id: issue_id, identifier: "PROJECT-A-RUN", state: "Todo"},
+          started_at: DateTime.utc_now()
+        },
+        project_b_key => %{
+          pid: self(),
+          ref: nil,
+          identifier: "PROJECT-B-RUN",
+          issue_identifier: "PROJECT-B-RUN",
+          issue_id: issue_id,
+          project_key: "project-b",
+          issue: %Issue{id: issue_id, identifier: "PROJECT-B-RUN", state: "Todo"},
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([project_a_key, project_b_key]),
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      retry_attempts: %{}
+    }
+
+    issue =
+      %Issue{
+      id: issue_id,
+      identifier: "PROJECT-B-RUN",
+      state: "In Progress",
+      title: "Refresh only project B",
+      description: "Only one runtime identity should refresh",
+      labels: []
+    }
+    |> Map.put(:project_key, "project-b")
+
+    updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
+
+    assert updated_state.running[project_b_key].issue.identifier == "PROJECT-B-RUN"
+    assert updated_state.running[project_b_key].issue.state == "In Progress"
+    assert updated_state.running[project_a_key].issue.identifier == "PROJECT-A-RUN"
+    assert updated_state.running[project_a_key].issue.state == "Todo"
+  end
+
+  test "running revalidation before dispatch does not reuse a different project entry that shares the same issue id" do
+    issue_id = "shared-dispatch-issue"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "PROJECT-B-DISPATCH",
+      title: "Dispatch candidate",
+      description: "Should not be revalidated against another project issue",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    assert {:skip, :missing} =
+             Orchestrator.revalidate_project_issue_for_dispatch_for_test(issue, "project-b", fn
+               "project-b" ->
+                 {:ok,
+                  %{
+                    candidates: [
+                      SymphonyElixir.Tracker.ProjectCandidate.new!(
+                        %Issue{
+                          id: issue_id,
+                          identifier: "PROJECT-A-DISPATCH",
+                          title: "Other project issue",
+                          state: "Done",
+                          blocked_by: []
+                        },
+                        %SymphonyElixir.ProjectContext{
+                          project_key: "project-a",
+                          display_name: "Project A",
+                          enabled: true,
+                          max_concurrent_agents: 15
+                        }
+                      )
+                    ],
+                    project_results: [
+                      %{project_key: "project-a", status: :ok, fetched_count: 1, candidate_count: 1, reason: nil},
+                      %{project_key: "project-b", status: :ok, fetched_count: 0, candidate_count: 0, reason: nil}
+                    ]
+                  }}
+             end)
   end
 
   test "reconcile stops running issue when it is reassigned away from this worker" do
@@ -604,6 +717,7 @@ defmodule SymphonyElixir.CoreTest do
 
   test "normal worker exit schedules active-state continuation retry" do
     issue_id = "issue-resume"
+    runtime_key = {"project-a", issue_id}
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :ContinuationOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -620,14 +734,16 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-558",
+      issue_identifier: "MT-558",
+      project_key: "project-a",
       issue: %Issue{id: issue_id, identifier: "MT-558", state: "In Progress"},
       started_at: DateTime.utc_now()
     }
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
       |> Map.put(:retry_attempts, %{})
     end)
 
@@ -637,13 +753,102 @@ defmodule SymphonyElixir.CoreTest do
 
     refute Map.has_key?(state.running, issue_id)
     assert MapSet.member?(state.completed, issue_id)
-    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[issue_id]
+    assert %{attempt: 1, due_at_ms: due_at_ms} = state.retry_attempts[runtime_key]
+    refute Map.has_key?(state.retry_attempts, issue_id)
     assert is_integer(due_at_ms)
     assert is_integer(due_at_ms)
   end
 
+  test "normal worker exit keeps completed as an issue_id sidecar while retry uses project-aware runtime identity" do
+    issue_id = "issue-resume-project-aware"
+    runtime_key = {"project-a", issue_id}
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationSidecarCompletedOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-558A",
+      issue_identifier: "MT-558A",
+      issue: %Issue{id: issue_id, identifier: "MT-558A", state: "In Progress"},
+      project_key: "project-a",
+      worker_host: "dm-dev2",
+      workspace_path: "/workspaces/project-a/MT-558A__issue",
+      attempt: 2,
+      retry_attempt: 1,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
+      |> Map.put(:retry_attempts, %{})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert MapSet.member?(state.completed, issue_id)
+    refute MapSet.member?(state.completed, runtime_key)
+
+    assert %{
+             issue_id: ^issue_id,
+             issue_identifier: "MT-558A",
+             project_key: "project-a"
+           } = state.retry_attempts[runtime_key]
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+  end
+
+  test "different projects with the same issue id do not block dispatch for the other project" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "shared-issue-id"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "PROJECT-B-1",
+      title: "dispatch candidate",
+      description: "should still dispatch for another project",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{
+        {"project-a", issue_id} => %{
+          pid: self(),
+          ref: nil,
+          identifier: "PROJECT-A-1",
+          issue_identifier: "PROJECT-A-1",
+          issue: %Issue{id: issue_id, identifier: "PROJECT-A-1", state: "In Progress"},
+          project_key: "project-a",
+          started_at: DateTime.utc_now()
+        }
+      },
+      claimed: MapSet.new([{"project-a", issue_id}]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
   test "abnormal worker exit increments retry attempt progressively" do
     issue_id = "issue-crash"
+    runtime_key = {"project-a", issue_id}
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :CrashRetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -660,6 +865,8 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-559",
+      issue_identifier: "MT-559",
+      project_key: "project-a",
       retry_attempt: 2,
       issue: %Issue{id: issue_id, identifier: "MT-559", state: "In Progress"},
       started_at: DateTime.utc_now()
@@ -667,8 +874,8 @@ defmodule SymphonyElixir.CoreTest do
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
       |> Map.put(:retry_attempts, %{})
     end)
 
@@ -677,13 +884,16 @@ defmodule SymphonyElixir.CoreTest do
     state = :sys.get_state(pid)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             state.retry_attempts[runtime_key]
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
 
     assert_due_in_range(due_at_ms, 39_000, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
     issue_id = "issue-crash-initial"
+    runtime_key = {"project-a", issue_id}
     ref = make_ref()
     orchestrator_name = Module.concat(__MODULE__, :InitialCrashRetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
@@ -700,14 +910,16 @@ defmodule SymphonyElixir.CoreTest do
       pid: self(),
       ref: ref,
       identifier: "MT-560",
+      issue_identifier: "MT-560",
+      project_key: "project-a",
       issue: %Issue{id: issue_id, identifier: "MT-560", state: "In Progress"},
       started_at: DateTime.utc_now()
     }
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.new([issue_id]))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
       |> Map.put(:retry_attempts, %{})
     end)
 
@@ -716,13 +928,16 @@ defmodule SymphonyElixir.CoreTest do
     state = :sys.get_state(pid)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[issue_id]
+             state.retry_attempts[runtime_key]
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
 
     assert_due_in_range(due_at_ms, 9_000, 10_500)
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
     issue_id = "issue-stale-retry"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :StaleRetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -739,18 +954,20 @@ defmodule SymphonyElixir.CoreTest do
     :sys.replace_state(pid, fn _ ->
       initial_state
       |> Map.put(:retry_attempts, %{
-        issue_id => %{
+        runtime_key => %{
           attempt: 2,
           timer_ref: nil,
           retry_token: current_retry_token,
           due_at_ms: System.monotonic_time(:millisecond) + 30_000,
           identifier: "MT-561",
-          error: "agent exited: :boom"
+          error: "agent exited: :boom",
+          project_key: "project-a",
+          issue_id: issue_id
         }
       })
     end)
 
-    send(pid, {:retry_issue, issue_id, stale_retry_token})
+    send(pid, {:retry_issue, runtime_key, stale_retry_token})
     Process.sleep(50)
 
     assert %{
@@ -758,7 +975,7 @@ defmodule SymphonyElixir.CoreTest do
              retry_token: ^current_retry_token,
              identifier: "MT-561",
              error: "agent exited: :boom"
-           } = :sys.get_state(pid).retry_attempts[issue_id]
+           } = :sys.get_state(pid).retry_attempts[runtime_key]
   end
 
   test "manual refresh coalesces repeated requests and ignores superseded ticks" do
@@ -1135,6 +1352,7 @@ defmodule SymphonyElixir.CoreTest do
       )
 
       issue = %Issue{
+        id: "issue-s-99",
         identifier: "S-99",
         title: "Smoke test",
         description: "Run and keep workspace",
@@ -1144,19 +1362,25 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
-      assert :ok = AgentRunner.run(issue)
+      assert :ok =
+               AgentRunner.run(
+                 issue,
+                 nil,
+                 project_key: "project-a",
+                 issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
+               )
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =
-        MapSet.difference(entries_after, before) |> Enum.filter(&(&1 == "S-99"))
+        MapSet.difference(entries_after, before) |> Enum.filter(&(&1 == "project-a"))
 
       created = MapSet.new(created)
 
       assert MapSet.size(created) == 1
-      workspace_name = created |> Enum.to_list() |> List.first()
-      assert workspace_name == "S-99"
+      project_root_name = created |> Enum.to_list() |> List.first()
+      assert project_root_name == "project-a"
 
-      workspace = Path.join(workspace_root, workspace_name)
+      workspace = Path.join([workspace_root, project_root_name, "S-99__issues99"])
       assert File.exists?(workspace)
       assert File.exists?(Path.join(workspace, "README.md"))
     after
@@ -1235,6 +1459,7 @@ defmodule SymphonyElixir.CoreTest do
                AgentRunner.run(
                  issue,
                  test_pid,
+                 project_key: "project-a",
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
 
@@ -1311,7 +1536,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       assert_raise RuntimeError, ~r/workspace_prepare_failed/, fn ->
-        AgentRunner.run(issue, nil, worker_host: "worker-a")
+        AgentRunner.run(issue, nil, worker_host: "worker-a", project_key: "project-a")
       end
 
       trace = File.read!(trace_file)
@@ -1422,7 +1647,7 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher, project_key: "project-a")
       assert_receive {:issue_state_fetch, 1}
       assert_receive {:issue_state_fetch, 2}
 
@@ -1539,7 +1764,7 @@ defmodule SymphonyElixir.CoreTest do
         labels: []
       }
 
-      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher)
+      assert :ok = AgentRunner.run(issue, nil, issue_state_fetcher: state_fetcher, project_key: "project-a")
 
       trace = File.read!(trace_file)
       assert length(String.split(trace, "RUN", trim: true)) == 1

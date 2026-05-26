@@ -1,0 +1,934 @@
+<style>
+  .stage-note {
+    margin-bottom: 1rem;
+    padding: 0.9rem 1rem;
+    border-radius: 14px;
+    background: rgba(10, 102, 194, 0.08);
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+    line-height: 1.55;
+  }
+
+  .formal-shell {
+    border-radius: 20px;
+    border: 1px solid #d7e1ec;
+    background: linear-gradient(180deg, #f7fafc 0%, #f3f7fb 100%);
+    overflow: hidden;
+    box-shadow: 0 14px 38px rgba(18, 38, 63, 0.08);
+  }
+
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.9rem 1.1rem;
+    border-bottom: 1px solid #d8e2ee;
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: blur(10px);
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+  }
+
+  .brand-mark {
+    width: 2.1rem;
+    height: 2.1rem;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #0f6cbd 0%, #1d84d8 100%);
+    color: white;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.92rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+  }
+
+  .brand h2 {
+    margin: 0;
+    font-size: 0.98rem;
+    color: #18293c;
+  }
+
+  .brand p {
+    margin: 0.15rem 0 0;
+    color: #66788d;
+    font-size: 0.82rem;
+  }
+
+  .nav-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+  }
+
+  .nav-pill {
+    border-radius: 999px;
+    padding: 0.42rem 0.72rem;
+    font-size: 0.8rem;
+    font-weight: 600;
+    border: 1px solid #d6e0eb;
+    color: #536577;
+    background: #ffffff;
+  }
+
+  .nav-pill.active {
+    border-color: #a9c8ee;
+    background: #eaf3fe;
+    color: #0a57a6;
+  }
+
+  .nav-pill.muted {
+    color: #8a98a8;
+    background: #f7f9fc;
+  }
+
+  .meta-strip {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.8rem;
+    padding: 0.78rem 1.1rem;
+    background: #eef4fb;
+    border-bottom: 1px solid #dbe5ef;
+    color: #5c6f85;
+    font-size: 0.79rem;
+    flex-wrap: wrap;
+  }
+
+  .meta-badges {
+    display: flex;
+    gap: 0.48rem;
+    flex-wrap: wrap;
+  }
+
+  .meta-chip {
+    border-radius: 999px;
+    padding: 0.24rem 0.6rem;
+    background: white;
+    border: 1px solid #d6e0eb;
+    color: #4f6276;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  .meta-chip.warn {
+    background: #fff7ea;
+    border-color: #f0d59c;
+    color: #8d5b00;
+  }
+
+  .meta-chip.fail {
+    background: #fff1f0;
+    border-color: #eab7b2;
+    color: #9f2d22;
+  }
+
+  .shell-body {
+    padding: 1rem 1.1rem 1.15rem;
+    display: grid;
+    gap: 0.9rem;
+  }
+
+  .metric-row {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+
+  .metric-card {
+    border-radius: 16px;
+    background: white;
+    border: 1px solid #dde6f0;
+    padding: 0.82rem 0.88rem;
+    min-height: 98px;
+  }
+
+  .metric-card.alert {
+    background: linear-gradient(180deg, #fff7f5 0%, #fffdfc 100%);
+    border-color: #efc3bc;
+  }
+
+  .metric-card h3 {
+    margin: 0 0 0.22rem;
+    color: #6b7d90;
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .metric-value {
+    margin: 0;
+    font-size: 1.45rem;
+    font-weight: 700;
+    color: #17293c;
+    letter-spacing: -0.02em;
+  }
+
+  .metric-detail {
+    margin: 0.24rem 0 0;
+    color: #6e7f91;
+    font-size: 0.8rem;
+    line-height: 1.4;
+  }
+
+  .main-grid {
+    display: grid;
+    grid-template-columns: minmax(300px, 0.78fr) minmax(760px, 1.58fr);
+    gap: 0.9rem;
+    align-items: start;
+  }
+
+  .column {
+    display: grid;
+    gap: 0.9rem;
+    align-content: start;
+  }
+
+  .panel {
+    border-radius: 18px;
+    background: white;
+    border: 1px solid #dce5ef;
+    overflow: hidden;
+  }
+
+  .panel-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.7rem;
+    padding: 0.78rem 0.92rem;
+    border-bottom: 1px solid #e7edf4;
+    background: #fbfcfe;
+  }
+
+  .panel-head.alert {
+    background: #fff8f7;
+    border-bottom-color: #efd0cc;
+  }
+
+  .panel-head h3 {
+    margin: 0;
+    color: #162739;
+    font-size: 0.9rem;
+  }
+
+  .panel-head p {
+    margin: 0.18rem 0 0;
+    color: #6b7c8e;
+    font-size: 0.78rem;
+  }
+
+  .panel-meta {
+    color: #6d7f92;
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+
+  .panel-body {
+    padding: 0.84rem 0.92rem;
+    display: grid;
+    gap: 0.62rem;
+  }
+
+  .anomaly-item,
+  .history-line {
+    border-radius: 10px;
+    border: 1px solid #e2e9f1;
+    background: #f8fafc;
+    padding: 0.55rem 0.64rem;
+    color: #5f7388;
+    font-size: 0.76rem;
+    line-height: 1.45;
+  }
+
+  .item-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+  }
+
+  .item-id {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-size: 0.86rem;
+    font-weight: 700;
+    color: #162638;
+  }
+
+  .item-tags {
+    display: flex;
+    gap: 0.34rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .tag {
+    border-radius: 999px;
+    padding: 0.16rem 0.46rem;
+    font-size: 0.68rem;
+    font-weight: 600;
+    border: 1px solid transparent;
+    line-height: 1.25;
+  }
+
+  .tag.red {
+    background: #ffe9e7;
+    border-color: #f1b8b2;
+    color: #9f2d22;
+  }
+
+  .tag.amber {
+    background: #fff2d7;
+    border-color: #f1d494;
+    color: #8b5900;
+  }
+
+  .tag.blue {
+    background: #e9f2ff;
+    border-color: #c8dafb;
+    color: #1754a1;
+  }
+
+  .item-main {
+    margin-top: 0.34rem;
+    color: #233547;
+    font-size: 0.8rem;
+    line-height: 1.45;
+  }
+
+  .item-sub {
+    margin-top: 0.32rem;
+    color: #6a7c8e;
+    font-size: 0.76rem;
+    line-height: 1.42;
+  }
+
+  .collapsed-card {
+    border-radius: 14px;
+    border: 1px dashed #cdd9e6;
+    background: #f8fbfe;
+    padding: 0.72rem 0.76rem;
+    display: grid;
+    gap: 0.44rem;
+  }
+
+  .collapsed-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.6rem;
+  }
+
+  .ghost-button {
+    border: 1px solid #c9d7e7;
+    background: white;
+    color: #1e5b9e;
+    font-size: 0.74rem;
+    font-weight: 800;
+    border-radius: 999px;
+    padding: 0.28rem 0.62rem;
+  }
+
+  .toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.3rem;
+  }
+
+  .sort-pills,
+  .view-pills {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .sort-pill {
+    border-radius: 999px;
+    padding: 0.3rem 0.58rem;
+    border: 1px solid #d4deea;
+    background: #f8fafc;
+    color: #56697c;
+    font-size: 0.72rem;
+    font-weight: 600;
+  }
+
+  .sort-pill.active {
+    background: #eaf3fe;
+    border-color: #a9c8ee;
+    color: #0a57a6;
+  }
+
+  .running-table {
+    border-radius: 14px;
+    border: 1px solid #dfe7f1;
+    overflow: hidden;
+  }
+
+  .running-head,
+  .running-row {
+    display: grid;
+    grid-template-columns: 88px 72px 74px 82px 86px 84px minmax(250px, 1fr);
+    gap: 0.52rem;
+    align-items: start;
+  }
+
+  .running-head {
+    padding: 0.58rem 0.72rem;
+    background: #f7fafd;
+    color: #74869a;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
+    border-bottom: 1px solid #e5edf5;
+  }
+
+  .running-entry {
+    padding: 0.52rem 0.72rem;
+    border-bottom: 1px solid #edf2f7;
+    background: white;
+  }
+
+  .running-entry:last-child {
+    border-bottom: 0;
+  }
+
+  .running-entry.warn {
+    background: linear-gradient(180deg, #fffaf1 0%, #ffffff 100%);
+  }
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-weight: 600;
+    color: #17283a;
+  }
+
+  .subtle {
+    color: #6e8093;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    margin-top: 0.18rem;
+  }
+
+  .message {
+    color: #223547;
+    font-size: 0.78rem;
+    line-height: 1.42;
+  }
+
+  .copy-chip {
+    border-radius: 999px;
+    border: 1px solid #d0dceb;
+    background: #f8fbfe;
+    color: #42586f;
+    font-size: 0.7rem;
+    font-weight: 600;
+    text-align: center;
+    padding: 0.28rem 0.4rem;
+  }
+
+  .freshness {
+    font-weight: 600;
+  }
+
+  .freshness.warn {
+    color: #a35c00;
+  }
+
+  .freshness.stale {
+    color: #aa2f24;
+  }
+
+  .nowrap {
+    white-space: nowrap;
+  }
+
+  .ellipsis {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: block;
+    max-width: 100%;
+  }
+
+  .footer-note {
+    margin-top: 0.15rem;
+    padding: 0.82rem 0.94rem;
+    border-radius: 14px;
+    background: #f6f9fc;
+    border: 1px solid #dee7f0;
+    color: #64778b;
+    font-size: 0.8rem;
+    line-height: 1.5;
+  }
+</style>
+
+<h2>首页最终版</h2>
+
+<div class="formal-shell">
+  <div class="topbar">
+      <div class="brand">
+        <div class="brand-mark">MP</div>
+        <div>
+          <h2>Multi-Project Operations Home</h2>
+          <p>多项目共享执行池</p>
+        </div>
+      </div>
+    <div class="nav-row">
+      <span class="nav-pill active">总览</span>
+      <span class="nav-pill">Sessions</span>
+      <span class="nav-pill">Issues</span>
+      <span class="nav-pill muted">Todo Pool</span>
+      <span class="nav-pill muted">事件</span>
+      <span class="nav-pill muted">日志</span>
+    </div>
+  </div>
+
+    <div class="meta-strip">
+      <div class="meta-badges">
+        <span class="meta-chip">10s 刷新</span>
+        <span class="meta-chip">手动排序</span>
+        <span class="meta-chip warn">稳定位置</span>
+        <span class="meta-chip">复制 session</span>
+      </div>
+      <div>最近成功更新 16:54:20</div>
+    </div>
+
+  <div class="shell-body">
+    <div class="metric-row">
+      <div class="metric-card">
+        <h3>Running</h3>
+        <p class="metric-value">20</p>
+      </div>
+      <div class="metric-card alert">
+        <h3>待处理</h3>
+        <p class="metric-value">7</p>
+      </div>
+      <div class="metric-card">
+        <h3>Tokens</h3>
+        <p class="metric-value">2.48M</p>
+        <p class="metric-detail">In 1.61M / Out 0.87M</p>
+      </div>
+      <div class="metric-card">
+        <h3>Runtime</h3>
+        <p class="metric-value">12h 18m</p>
+      </div>
+      <div class="metric-card alert">
+        <h3>最久未更新</h3>
+        <p class="metric-value">8m</p>
+      </div>
+      <div class="metric-card">
+        <h3>Projects</h3>
+        <p class="metric-value">6 / 8</p>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <div class="column">
+        <div class="panel">
+          <div class="panel-head alert">
+            <div>
+              <h3>当前异常</h3>
+            </div>
+            <div class="panel-meta">按严重度</div>
+          </div>
+          <div class="panel-body">
+            <div class="anomaly-item">
+              <div class="item-head">
+                <span class="item-id">MT-918</span>
+                <div class="item-tags">
+                  <span class="tag red">stale 8m</span>
+                  <span class="tag amber ellipsis" style="max-width: 98px;">proj-a</span>
+                </div>
+              </div>
+              <div class="item-main">/srv/pool/proj-a/MT-918 · Copy Session</div>
+              <div class="item-sub">agent message 在 planning next tool call 后无新输出</div>
+            </div>
+
+            <div class="anomaly-item">
+              <div class="item-head">
+                <span class="item-id">MT-902</span>
+                <div class="item-tags">
+                  <span class="tag amber">waiting_input</span>
+                  <span class="tag amber ellipsis" style="max-width: 98px;">proj-b</span>
+                </div>
+              </div>
+              <div class="item-main">/srv/pool/proj-b/MT-902 · Copy Session</div>
+              <div class="item-sub">turn blocked: waiting for user input</div>
+            </div>
+
+            <div class="anomaly-item">
+              <div class="item-head">
+                <span class="item-id">MT-411</span>
+                <div class="item-tags">
+                  <span class="tag amber">retrying</span>
+                  <span class="tag amber ellipsis" style="max-width: 98px;">proj-c-with-long-name</span>
+                </div>
+              </div>
+              <div class="item-main">attempt 2 · due 00:18 · /srv/pool/proj-c/MT-411</div>
+              <div class="item-sub">API timeout after snapshot update</div>
+            </div>
+
+            <div class="anomaly-item">
+              <div class="item-head">
+                <span class="item-id">MT-574</span>
+                <div class="item-tags">
+                  <span class="tag red">approval_required</span>
+                  <span class="tag amber ellipsis" style="max-width: 98px;">proj-d</span>
+                </div>
+              </div>
+              <div class="item-main">/srv/pool/proj-d/MT-574 · Copy Session</div>
+              <div class="item-sub">approval gate requested before write</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>最近恢复事件</h3>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="history-line">16:42 · proj-a / MT-811 已恢复运行，之前因 waiting input 阻塞；详细过程继续去 detail / logs。</div>
+            <div class="history-line">16:31 · proj-e / MT-774 已恢复运行，之前处于 retrying after API timeout with jitter。</div>
+            <div class="history-line">16:18 · proj-d / MT-702 已恢复运行，之前因 approval_required 暂停。</div>
+            <div class="history-line">16:05 · proj-f / MT-688 已恢复运行，之前因 agent exited: :boom 进入重试。</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Todo Pool</h3>
+            </div>
+            <div class="panel-meta"><button class="ghost-button">手动检查</button></div>
+          </div>
+          <div class="panel-body">
+            <div class="collapsed-card">
+              <div class="collapsed-head">
+                <strong>项目摘要</strong>
+                <span class="panel-meta">点击展开细节</span>
+              </div>
+              <div class="history-line">proj-a · 14 waiting</div>
+              <div class="history-line">proj-b · 11 waiting</div>
+              <div class="history-line">proj-c-with-long-name · 9 waiting</div>
+              <div class="history-line">proj-d · 6 waiting</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="column">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>正常 Running</h3>
+            </div>
+            <div class="panel-meta">20 rows</div>
+          </div>
+          <div class="panel-body">
+            <div class="toolbar">
+              <div class="sort-pills">
+                <span class="sort-pill active">最后更新 ↑</span>
+                <span class="sort-pill">项目</span>
+                <span class="sort-pill">运行时长</span>
+                <span class="sort-pill">Token</span>
+              </div>
+              <div class="view-pills">
+                <span class="sort-pill active">紧凑列表</span>
+                <span class="sort-pill">稳定刷新</span>
+                <span class="sort-pill">Copy session</span>
+              </div>
+            </div>
+
+            <div class="running-table">
+              <div class="running-head">
+                <span>Issue</span>
+                <span>Proj</span>
+                <span>Copy</span>
+                <span>Runtime</span>
+                <span>Tokens</span>
+                <span>Last</span>
+                <span>Event</span>
+              </div>
+
+              <div class="running-entry warn">
+                <div class="running-row">
+                  <div><div class="mono">MT-123</div><div class="subtle ellipsis">/srv/pool/proj-a/MT-123</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-a</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">11m · t3</div></div>
+                  <div><div class="mono">18.4k</div></div>
+                  <div><div class="mono freshness warn">1m48s</div></div>
+                  <div><div class="message ellipsis">planning next tool call after patch staging</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-120</div><div class="subtle ellipsis">/srv/pool/proj-a/MT-120</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-a</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">18m · t12</div></div>
+                  <div><div class="mono">42.1k</div></div>
+                  <div><div class="mono freshness">14s</div></div>
+                  <div><div class="message ellipsis">tool result applied, verification prompt prepared</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-121</div><div class="subtle ellipsis">/srv/pool/proj-b/MT-121</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-b</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">9m · t6</div></div>
+                  <div><div class="mono">16.7k</div></div>
+                  <div><div class="mono freshness">21s</div></div>
+                  <div><div class="message ellipsis">agent message content streaming</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-124</div><div class="subtle ellipsis">/srv/pool/proj-c/MT-124</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-c-with-long-name</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">31m · t15</div></div>
+                  <div><div class="mono">53.0k</div></div>
+                  <div><div class="mono freshness">59s</div></div>
+                  <div><div class="message ellipsis">patch applied, next concise reasoning step pending</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-128</div><div class="subtle ellipsis">/srv/pool/proj-b/MT-128</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-b</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">7m · t5</div></div>
+                  <div><div class="mono">9.3k</div></div>
+                  <div><div class="mono freshness">28s</div></div>
+                  <div><div class="message ellipsis">edited copy deck, follow-up confirmation requested</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-133</div><div class="subtle ellipsis">/srv/pool/proj-c/MT-133</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-c-with-long-name</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">24m · t10</div></div>
+                  <div><div class="mono">27.6k</div></div>
+                  <div><div class="mono freshness">33s</div></div>
+                  <div><div class="message ellipsis">reviewing downstream consumer assumptions</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-137</div><div class="subtle ellipsis">/srv/pool/proj-d/MT-137</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-d</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">6m · t2</div></div>
+                  <div><div class="mono">7.9k</div></div>
+                  <div><div class="mono freshness">40s</div></div>
+                  <div><div class="message ellipsis">first diff draft ready, targeted verification next</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-140</div><div class="subtle ellipsis">/srv/pool/proj-d/MT-140</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-d</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">14m · t7</div></div>
+                  <div><div class="mono">12.5k</div></div>
+                  <div><div class="mono freshness">44s</div></div>
+                  <div><div class="message ellipsis">comparing presenter projections with row density</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-142</div><div class="subtle ellipsis">/srv/pool/proj-e/MT-142</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-e</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">8m · t4</div></div>
+                  <div><div class="mono">10.8k</div></div>
+                  <div><div class="mono freshness">47s</div></div>
+                  <div><div class="message ellipsis">checking route names for canonical detail link</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-145</div><div class="subtle ellipsis">/srv/pool/proj-e/MT-145</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-e</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">16m · t8</div></div>
+                  <div><div class="mono">21.4k</div></div>
+                  <div><div class="mono freshness">51s</div></div>
+                  <div><div class="message ellipsis">refining spacing to protect first-screen density</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-148</div><div class="subtle ellipsis">/srv/pool/proj-f/MT-148</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-f</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">5m · t2</div></div>
+                  <div><div class="mono">6.4k</div></div>
+                  <div><div class="mono freshness">54s</div></div>
+                  <div><div class="message ellipsis">reviewing issue text, smaller wording changes only</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-150</div><div class="subtle ellipsis">/srv/pool/proj-a/MT-150</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-a</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">12m · t5</div></div>
+                  <div><div class="mono">14.0k</div></div>
+                  <div><div class="mono freshness">57s</div></div>
+                  <div><div class="message ellipsis">tool output summarized, next doc patch assembled</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-151</div><div class="subtle ellipsis">/srv/pool/proj-b/MT-151</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-b</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">19m · t9</div></div>
+                  <div><div class="mono">29.8k</div></div>
+                  <div><div class="mono freshness">1m02s</div></div>
+                  <div><div class="message ellipsis">collecting acceptance notes without contract changes</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-154</div><div class="subtle ellipsis">/srv/pool/proj-c/MT-154</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-c-with-long-name</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">28m · t14</div></div>
+                  <div><div class="mono">35.2k</div></div>
+                  <div><div class="mono freshness">1m06s</div></div>
+                  <div><div class="message ellipsis">compact rows, narrow anomaly column</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-156</div><div class="subtle ellipsis">/srv/pool/proj-d/MT-156</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-d</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">17m · t8</div></div>
+                  <div><div class="mono">17.5k</div></div>
+                  <div><div class="mono freshness">1m10s</div></div>
+                  <div><div class="message ellipsis">reviewing collapsed todo expansion behavior</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-159</div><div class="subtle ellipsis">/srv/pool/proj-e/MT-159</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-e</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">13m · t6</div></div>
+                  <div><div class="mono">11.3k</div></div>
+                  <div><div class="mono freshness">1m14s</div></div>
+                  <div><div class="message ellipsis">detail view keeps the full event and log context</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-160</div><div class="subtle ellipsis">/srv/pool/proj-f/MT-160</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-f</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">10m · t5</div></div>
+                  <div><div class="mono">8.8k</div></div>
+                  <div><div class="mono freshness">1m20s</div></div>
+                  <div><div class="message ellipsis">summary copy refined to clearer wording</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-164</div><div class="subtle ellipsis">/srv/pool/proj-a/MT-164</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-a</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">22m · t10</div></div>
+                  <div><div class="mono">23.6k</div></div>
+                  <div><div class="mono freshness">1m24s</div></div>
+                  <div><div class="message ellipsis">top nav chosen to protect running-column width</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-166</div><div class="subtle ellipsis">/srv/pool/proj-b/MT-166</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-b</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">15m · t7</div></div>
+                  <div><div class="mono">13.9k</div></div>
+                  <div><div class="mono freshness">1m29s</div></div>
+                  <div><div class="message ellipsis">homepage still relies on current presenter fields</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-170</div><div class="subtle ellipsis">/srv/pool/proj-c/MT-170</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-c-with-long-name</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">26m · t11</div></div>
+                  <div><div class="mono">31.7k</div></div>
+                  <div><div class="mono freshness">1m35s</div></div>
+                  <div><div class="message ellipsis">refresh updates field values in place only</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-174</div><div class="subtle ellipsis">/srv/pool/proj-d/MT-174</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-d</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">18m · t8</div></div>
+                  <div><div class="mono">19.2k</div></div>
+                  <div><div class="mono freshness">1m40s</div></div>
+                  <div><div class="message ellipsis">resolved incidents stay out of current anomalies</div></div>
+                </div>
+              </div>
+
+              <div class="running-entry">
+                <div class="running-row">
+                  <div><div class="mono">MT-180</div><div class="subtle ellipsis">/srv/pool/proj-e/MT-180</div></div>
+                  <div><span class="tag blue ellipsis" style="max-width: 92px;">proj-e</span></div>
+                  <div><div class="copy-chip">session</div></div>
+                  <div><div class="mono nowrap">21m · t9</div></div>
+                  <div><div class="mono">24.4k</div></div>
+                  <div><div class="mono freshness">1m44s</div></div>
+                  <div><div class="message ellipsis">homepage stays practical and dense</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>

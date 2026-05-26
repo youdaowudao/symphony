@@ -88,11 +88,35 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _opts), do: :ok
 
+  defp send_codex_runtime_binding(
+         recipient,
+         %Issue{id: issue_id},
+         opts,
+         %{metadata: metadata, worker_host: worker_host}
+       )
+       when is_binary(issue_id) and is_pid(recipient) and is_list(opts) and is_map(metadata) do
+    send(
+      recipient,
+      {:codex_runtime_binding, issue_id,
+       %{
+         project_key: Keyword.get(opts, :project_key),
+         codex_app_server_pid: Map.get(metadata, :codex_app_server_pid),
+         worker_host: worker_host
+       }}
+    )
+
+    :ok
+  end
+
+  defp send_codex_runtime_binding(_recipient, _issue, _opts, _session), do: :ok
+
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
     issue_state_fetcher = Keyword.get(opts, :issue_state_fetcher, &Tracker.fetch_issue_states_by_ids/1)
 
     with {:ok, session} <- AppServer.start_session(workspace, worker_host: worker_host) do
+      send_codex_runtime_binding(codex_update_recipient, issue, opts, session)
+
       try do
         do_run_codex_turns(session, workspace, issue, codex_update_recipient, opts, issue_state_fetcher, 1, max_turns)
       after

@@ -1,0 +1,527 @@
+<style>
+  .intro {
+    margin-bottom: 1rem;
+    padding: 0.85rem 1rem;
+    border-radius: 12px;
+    background: rgba(0, 113, 227, 0.08);
+    color: var(--text-secondary);
+    font-size: 0.92rem;
+  }
+
+  .cards.refined {
+    grid-template-columns: repeat(3, minmax(330px, 1fr));
+    align-items: start;
+  }
+
+  .refined .card-image {
+    align-items: stretch;
+    justify-content: stretch;
+    padding: 0.9rem;
+    background:
+      radial-gradient(circle at top left, rgba(0,113,227,0.08), rgba(0,113,227,0) 34%),
+      var(--bg-tertiary);
+  }
+
+  .mini-shell {
+    width: 100%;
+    min-height: 355px;
+    border-radius: 14px;
+    background: #f6f9fc;
+    border: 1px solid #d9e1ea;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mini-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.7rem;
+    padding: 0.65rem 0.75rem;
+    background: #eef4f9;
+    border-bottom: 1px solid #d9e1ea;
+    color: #556476;
+    font-size: 0.67rem;
+  }
+
+  .mini-top strong {
+    color: #1a2938;
+    font-size: 0.78rem;
+    letter-spacing: -0.01em;
+  }
+
+  .mini-body {
+    padding: 0.7rem;
+    display: grid;
+    gap: 0.6rem;
+    flex: 1;
+  }
+
+  .summary-row {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.42rem;
+  }
+
+  .summary-box {
+    border-radius: 10px;
+    background: white;
+    border: 1px solid #dde5ee;
+    padding: 0.36rem 0.42rem;
+  }
+
+  .summary-box strong {
+    display: block;
+    font-size: 0.88rem;
+    color: #111827;
+  }
+
+  .summary-box span {
+    display: block;
+    margin-top: 0.08rem;
+    font-size: 0.58rem;
+    color: #6b7280;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .summary-box.alert {
+    background: #fff3f2;
+    border-color: #f2b7b7;
+  }
+
+  .grid-b {
+    display: grid;
+    grid-template-columns: 0.82fr 1.38fr;
+    gap: 0.58rem;
+  }
+
+  .grid-b.todo-heavy {
+    grid-template-columns: 0.78fr 1.22fr;
+  }
+
+  .col {
+    display: grid;
+    gap: 0.58rem;
+    align-content: start;
+  }
+
+  .box {
+    border-radius: 12px;
+    border: 1px solid #dde5ee;
+    background: white;
+    overflow: hidden;
+  }
+
+  .box-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 0.62rem;
+    border-bottom: 1px solid #edf1f5;
+    background: #fbfcfd;
+    color: #66768a;
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .box-head strong {
+    text-transform: none;
+    letter-spacing: 0;
+    color: #1a2838;
+    font-size: 0.75rem;
+  }
+
+  .box-head.red {
+    background: #fff7f7;
+    color: #9a291d;
+    border-bottom-color: #f0cbcb;
+  }
+
+  .box-body {
+    padding: 0.5rem;
+    display: grid;
+    gap: 0.42rem;
+  }
+
+  .anomaly-line,
+  .running-line,
+  .todo-line {
+    border-radius: 9px;
+    padding: 0.38rem 0.44rem;
+    font-size: 0.66rem;
+    border: 1px solid #e7ecf2;
+    background: #f9fbfd;
+    color: #243447;
+  }
+
+  .anomaly-line {
+    background: #fff8f7;
+    border-color: #efc6c1;
+  }
+
+  .running-line.warn {
+    background: #fff8ee;
+    border-color: #f0d7a8;
+  }
+
+  .line-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.45rem;
+    align-items: center;
+    margin-bottom: 0.2rem;
+  }
+
+  .mono {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-weight: 700;
+    color: #1a2431;
+  }
+
+  .chip {
+    border-radius: 999px;
+    padding: 0.12rem 0.34rem;
+    font-size: 0.56rem;
+    background: #eef3f8;
+    color: #52606d;
+    border: 1px solid transparent;
+  }
+
+  .chip.red {
+    background: #feeceb;
+    border-color: #f7c1bc;
+    color: #9a291d;
+  }
+
+  .chip.amber {
+    background: #fff4da;
+    border-color: #f6db9c;
+    color: #935d00;
+  }
+
+  .chip.blue {
+    background: #e7f0ff;
+    border-color: #c8dafd;
+    color: #1f57b8;
+  }
+
+  .line-main {
+    line-height: 1.35;
+  }
+
+  .line-sub {
+    margin-top: 0.18rem;
+    color: #6b7280;
+    font-size: 0.6rem;
+    line-height: 1.35;
+  }
+
+  .running-table-head {
+    display: grid;
+    grid-template-columns: 74px 56px 70px 70px 1fr;
+    gap: 0.38rem;
+    padding: 0 0.25rem;
+    color: #738297;
+    font-size: 0.56rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .running-table-row {
+    display: grid;
+    grid-template-columns: 74px 56px 70px 70px 1fr;
+    gap: 0.38rem;
+    align-items: start;
+  }
+
+  .pick-note {
+    margin-top: 1.3rem;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+  }
+</style>
+
+<h2>B 的 3 个精修变体</h2>
+<p class="subtitle">骨架不变：左异常、右正常 running、宽屏、稳定刷新、手动排序、失败时保留上次成功画面。现在只比较密度和承接方式。</p>
+
+<div class="intro">
+  你只需要回答“哪个最顺手”，或者说“用哪个做基底继续改”。这一轮不再讨论大方向。
+</div>
+
+<div class="cards refined">
+  <div class="card" data-choice="b1" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mini-shell">
+        <div class="mini-top">
+          <strong>B1. 稳定值班型</strong>
+          <span>异常更简洁，正常区最稳</span>
+        </div>
+        <div class="mini-body">
+          <div class="summary-row">
+            <div class="summary-box"><strong>12</strong><span>Running</span></div>
+            <div class="summary-box alert"><strong>9</strong><span>Need action</span></div>
+            <div class="summary-box"><strong>482k</strong><span>Tokens</span></div>
+            <div class="summary-box"><strong>7h</strong><span>Runtime</span></div>
+            <div class="summary-box"><strong>34</strong><span>Todo</span></div>
+          </div>
+
+          <div class="grid-b">
+            <div class="col">
+              <div class="box">
+                <div class="box-head red">
+                  <strong>异常</strong>
+                  <span>紧凑行</span>
+                </div>
+                <div class="box-body">
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-918</span><span class="chip red">8m stale</span></div>
+                    <div class="line-main">proj-a · workspace + session + turn</div>
+                    <div class="line-sub">最后错误 1 行，保持短小</div>
+                  </div>
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-902</span><span class="chip amber">blocked</span></div>
+                    <div class="line-main">proj-b · waiting input</div>
+                    <div class="line-sub">最后错误 1 行，保持短小</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="box">
+                <div class="box-head">
+                  <strong>Todo pool</strong>
+                  <span>压缩预留</span>
+                </div>
+                <div class="box-body">
+                  <div class="todo-line">proj-a · 14 waiting · 3 blocked</div>
+                  <div class="todo-line">proj-b · 11 waiting · top blocker MT-902</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="col">
+              <div class="box">
+                <div class="box-head">
+                  <strong>正常 Running</strong>
+                  <span>默认 last update 升序</span>
+                </div>
+                <div class="box-body">
+                  <div class="running-table-head">
+                    <span>Issue</span><span>Proj</span><span>Age</span><span>Last</span><span>Latest</span>
+                  </div>
+                  <div class="running-line">
+                    <div class="running-table-row">
+                      <span class="mono">MT-120</span><span class="chip blue">a</span><span>18m/12</span><span>14s</span><span>tool result applied…</span>
+                    </div>
+                  </div>
+                  <div class="running-line warn">
+                    <div class="running-table-row">
+                      <span class="mono">MT-123</span><span class="chip blue">a</span><span>11m/3</span><span>1m48s</span><span>接近 stale threshold</span>
+                    </div>
+                  </div>
+                  <div class="running-line">
+                    <div class="running-table-row">
+                      <span class="mono">MT-124</span><span class="chip blue">b</span><span>31m/15</span><span>59s</span><span>patch applied…</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B1. 稳定值班型</h3>
+      <p>最强调稳定和不跳动。异常区更瘦，正常区更像操作台主表，todo 池只是底部承接。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b2" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mini-shell">
+        <div class="mini-top">
+          <strong>B2. 信息更全型</strong>
+          <span>推荐：异常和正常都多给一点上下文</span>
+        </div>
+        <div class="mini-body">
+          <div class="summary-row">
+            <div class="summary-box"><strong>12</strong><span>Running</span></div>
+            <div class="summary-box alert"><strong>9</strong><span>Need action</span></div>
+            <div class="summary-box"><strong>482k</strong><span>Tokens</span></div>
+            <div class="summary-box"><strong>7h</strong><span>Runtime</span></div>
+            <div class="summary-box"><strong>old 8m</strong><span>Stale max</span></div>
+          </div>
+
+          <div class="grid-b">
+            <div class="col">
+              <div class="box">
+                <div class="box-head red">
+                  <strong>异常</strong>
+                  <span>直接列 issue + 原因</span>
+                </div>
+                <div class="box-body">
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-918</span><span class="chip red">stale</span></div>
+                    <div class="line-main">proj-a · title · ws · session · turn 14</div>
+                    <div class="line-sub">agent message 在 planning next tool call 后无新输出，按严重度 + 发生时间稳定排序</div>
+                  </div>
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-902</span><span class="chip amber">blocked</span></div>
+                    <div class="line-main">proj-b · title · session copied</div>
+                    <div class="line-sub">waiting for user input；错误原因完整一小段，不展开成长文</div>
+                  </div>
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-411</span><span class="chip amber">retry</span></div>
+                    <div class="line-main">proj-c · attempt 2 · due 00:18</div>
+                    <div class="line-sub">retrying after API timeout with jitter</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="box">
+                <div class="box-head">
+                  <strong>Todo pool</strong>
+                  <span>第一层摘要</span>
+                </div>
+                <div class="box-body">
+                  <div class="todo-line">proj-a · 14 waiting · blocked by MT-918</div>
+                  <div class="todo-line">proj-b · 11 waiting · blocked by MT-902</div>
+                  <div class="todo-line">proj-c · 9 waiting · top ready MT-133</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="col">
+              <div class="box">
+                <div class="box-head">
+                  <strong>正常 Running</strong>
+                  <span>信息更多，但仍截断</span>
+                </div>
+                <div class="box-body">
+                  <div class="running-table-head">
+                    <span>Issue</span><span>Proj</span><span>Age</span><span>Last</span><span>Latest</span>
+                  </div>
+                  <div class="running-line">
+                    <div class="running-table-row">
+                      <span class="mono">MT-120</span><span class="chip blue">a</span><span>18m/12</span><span>14s</span><span>tool result applied, planning next patch…</span>
+                    </div>
+                    <div class="line-sub">token 42.1k · session copy · event and text 并存</div>
+                  </div>
+                  <div class="running-line">
+                    <div class="running-table-row">
+                      <span class="mono">MT-121</span><span class="chip blue">b</span><span>9m/6</span><span>21s</span><span>agent message content streaming…</span>
+                    </div>
+                    <div class="line-sub">token 18.4k · workspace visible</div>
+                  </div>
+                  <div class="running-line warn">
+                    <div class="running-table-row">
+                      <span class="mono">MT-123</span><span class="chip blue">a</span><span>11m/3</span><span>1m48s</span><span>still active, close to stale threshold…</span>
+                    </div>
+                    <div class="line-sub">高亮但不自动进异常区，等待人工判断</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B2. 信息更全型</h3>
+      <p>当前最推荐。保留 B 的稳态结构，但把你关心的字段补得更实用，尤其是异常原因和正常区上下文。</p>
+    </div>
+  </div>
+
+  <div class="card" data-choice="b3" onclick="toggleSelect(this)">
+    <div class="card-image">
+      <div class="mini-shell">
+        <div class="mini-top">
+          <strong>B3. 队列承接型</strong>
+          <span>更早把 todo pool 拉进来</span>
+        </div>
+        <div class="mini-body">
+          <div class="summary-row">
+            <div class="summary-box"><strong>12</strong><span>Running</span></div>
+            <div class="summary-box alert"><strong>9</strong><span>Need action</span></div>
+            <div class="summary-box"><strong>34</strong><span>Todo</span></div>
+            <div class="summary-box"><strong>7h</strong><span>Runtime</span></div>
+            <div class="summary-box"><strong>482k</strong><span>Tokens</span></div>
+          </div>
+
+          <div class="grid-b todo-heavy">
+            <div class="col">
+              <div class="box">
+                <div class="box-head red">
+                  <strong>异常</strong>
+                  <span>更短</span>
+                </div>
+                <div class="box-body">
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-918</span><span class="chip red">8m stale</span></div>
+                    <div class="line-main">proj-a · title · session</div>
+                  </div>
+                  <div class="anomaly-line">
+                    <div class="line-top"><span class="mono">MT-902</span><span class="chip amber">blocked</span></div>
+                    <div class="line-main">proj-b · waiting input</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="box">
+                <div class="box-head">
+                  <strong>Blocked-by chain</strong>
+                  <span>提前露出</span>
+                </div>
+                <div class="box-body">
+                  <div class="todo-line">MT-130 → MT-918</div>
+                  <div class="todo-line">MT-131 → MT-902</div>
+                  <div class="todo-line">MT-132 → MT-411</div>
+                </div>
+              </div>
+            </div>
+
+            <div class="col">
+              <div class="box">
+                <div class="box-head">
+                  <strong>正常 Running</strong>
+                  <span>仍是主区，但让出底部承接</span>
+                </div>
+                <div class="box-body">
+                  <div class="running-table-head">
+                    <span>Issue</span><span>Proj</span><span>Age</span><span>Last</span><span>Latest</span>
+                  </div>
+                  <div class="running-line"><div class="running-table-row"><span class="mono">MT-120</span><span class="chip blue">a</span><span>18m/12</span><span>14s</span><span>tool result applied…</span></div></div>
+                  <div class="running-line"><div class="running-table-row"><span class="mono">MT-121</span><span class="chip blue">b</span><span>9m/6</span><span>21s</span><span>streaming…</span></div></div>
+                  <div class="running-line warn"><div class="running-table-row"><span class="mono">MT-123</span><span class="chip blue">a</span><span>11m/3</span><span>1m48s</span><span>close to stale…</span></div></div>
+                </div>
+              </div>
+
+              <div class="box">
+                <div class="box-head">
+                  <strong>Todo pool</strong>
+                  <span>更显眼</span>
+                </div>
+                <div class="box-body">
+                  <div class="todo-line">proj-a · 14 waiting · 3 blocked</div>
+                  <div class="todo-line">proj-b · 11 waiting · 1 blocked</div>
+                  <div class="todo-line">proj-c · 9 waiting · top ready MT-133</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>B3. 队列承接型</h3>
+      <p>如果你想更早把未来自动化池带进首页，这是最合适的基底。但第一屏运行主区会稍微被压缩。</p>
+    </div>
+  </div>
+</div>
+
+<p class="pick-note">
+  打开后只需要告诉我：`B1 / B2 / B3` 选哪个做基底。若你愿意，也可以补一句“要保留哪一个里的某个局部”。
+</p>

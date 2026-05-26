@@ -331,6 +331,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-runtime-metadata"
+    runtime_key = {"project-a", issue_id}
 
     issue = %Issue{
       id: issue_id,
@@ -370,8 +371,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
     end)
 
     send(
@@ -398,7 +399,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
             workspace_path: "/tmp/project-a/MT-300__12345678",
             attempt: 3
           },
-          current_state.running[issue_id]
+          current_state.running[runtime_key]
         )
       end)
 
@@ -409,7 +410,316 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              worker_host: "worker-01",
              workspace_path: "/tmp/project-a/MT-300__12345678",
              attempt: 3
-           } = state.running[issue_id]
+           } = state.running[runtime_key]
+  end
+
+  test "worker runtime info writes running metadata under a project-aware runtime key" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    issue_id = "issue-runtime-metadata-project-aware"
+    runtime_key = {"project-a", issue_id}
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-300A",
+      title: "Runtime metadata project-aware key test",
+      description: "Track runtime metadata under a tuple key",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-300A"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :RuntimeMetadataProjectAwareKeyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue.identifier,
+      issue: issue,
+      project_key: "project-a",
+      worker_host: nil,
+      workspace_path: nil,
+      session_id: nil,
+      turn_count: 0,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
+    end)
+
+    send(
+      pid,
+      {:worker_runtime_info, issue_id,
+       %{
+         project_key: "project-a",
+         issue_id: issue_id,
+         issue_identifier: issue.identifier,
+         worker_host: "worker-01",
+         workspace_path: "/tmp/project-a/MT-300A__12345678",
+         attempt: 3
+       }}
+    )
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        match?(
+          %{
+            project_key: "project-a",
+            issue_id: ^issue_id,
+            issue_identifier: "MT-300A",
+            worker_host: "worker-01",
+            workspace_path: "/tmp/project-a/MT-300A__12345678",
+            attempt: 3
+          },
+          current_state.running[runtime_key]
+        )
+      end)
+
+    assert %{
+             project_key: "project-a",
+             issue_id: ^issue_id,
+             issue_identifier: "MT-300A",
+             worker_host: "worker-01",
+             workspace_path: "/tmp/project-a/MT-300A__12345678",
+             attempt: 3
+           } = state.running[runtime_key]
+
+    refute Map.has_key?(state.running, issue_id)
+    assert MapSet.member?(state.claimed, runtime_key)
+    refute MapSet.member?(state.claimed, issue_id)
+  end
+
+  test "codex_worker_update keeps project-aware running entries distinct when projects share an issue id" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    issue_id = "shared-runtime-issue"
+    project_a_key = {"project-a", issue_id}
+    project_b_key = {"project-b", issue_id}
+    now = DateTime.utc_now()
+
+    issue_a = %Issue{
+      id: issue_id,
+      identifier: "PROJECT-A-SHARED",
+      title: "Project A shared runtime issue",
+      description: "Track codex updates per runtime identity",
+      state: "In Progress",
+      url: "https://example.org/issues/PROJECT-A-SHARED"
+    }
+
+    issue_b = %Issue{
+      id: issue_id,
+      identifier: "PROJECT-B-SHARED",
+      title: "Project B shared runtime issue",
+      description: "Track codex updates per runtime identity",
+      state: "In Progress",
+      url: "https://example.org/issues/PROJECT-B-SHARED"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :ProjectAwareCodexUpdateCollisionOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_a = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue_a.identifier,
+      issue_identifier: issue_a.identifier,
+      issue_id: issue_id,
+      issue: issue_a,
+      project_key: "project-a",
+      worker_host: "worker-a",
+      workspace_path: "/tmp/project-a/PROJECT-A-SHARED__runtime",
+      session_id: nil,
+      turn_count: 0,
+      codex_app_server_pid: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: now
+    }
+
+    running_b = %{
+      pid: self(),
+      ref: make_ref(),
+      identifier: issue_b.identifier,
+      issue_identifier: issue_b.identifier,
+      issue_id: issue_id,
+      issue: issue_b,
+      project_key: "project-b",
+      worker_host: "worker-b",
+      workspace_path: "/tmp/project-b/PROJECT-B-SHARED__runtime",
+      session_id: nil,
+      turn_count: 0,
+      codex_app_server_pid: nil,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      started_at: now
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{project_a_key => running_a, project_b_key => running_b})
+      |> Map.put(:claimed, MapSet.new([project_a_key, project_b_key]))
+    end)
+
+    send(
+      pid,
+      {:codex_runtime_binding, issue_id,
+       %{
+         project_key: "project-b",
+         worker_host: "worker-b",
+         codex_app_server_pid: "4242"
+       }}
+    )
+
+    send(
+      pid,
+      {:codex_worker_update, issue_id,
+       %{
+         event: :session_started,
+          session_id: "session-b-updated",
+         codex_app_server_pid: "4242",
+         worker_host: "worker-b",
+         timestamp: now
+       }}
+    )
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        current_state.running[project_b_key].session_id == "session-b-updated"
+      end)
+
+    assert state.running[project_b_key].session_id == "session-b-updated"
+    assert state.running[project_b_key].codex_app_server_pid == "4242"
+    assert state.running[project_a_key].session_id == nil
+    assert state.running[project_a_key].codex_app_server_pid == nil
+  end
+
+  test "project-aware running reconcile keeps same issue ids isolated across projects" do
+    Application.put_env(:symphony_elixir, :linear_client_module, V012FixLinearClient)
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15},
+      %{project_key: "project-b", display_name: nil, enabled: true, max_concurrent_agents: 15}
+    ])
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_candidate_results, %{
+      "project-a" => {:ok, []},
+      "project-b" => {:ok, []}
+    })
+
+    issue_id = "shared-running-issue"
+    project_a_key = {"project-a", issue_id}
+    project_b_key = {"project-b", issue_id}
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_state_results, %{
+      "project-a" =>
+        {:ok,
+         [
+           %Issue{
+             id: issue_id,
+             identifier: "PROJECT-A-RUN",
+             title: "project a runtime issue",
+             state: "Todo"
+           }
+         ]},
+      "project-b" =>
+        {:ok,
+         [
+           %Issue{
+             id: issue_id,
+             identifier: "PROJECT-B-RUN",
+             title: "project b runtime issue",
+             state: "In Progress"
+           }
+         ]}
+    })
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      poll_interval_ms: 50,
+      max_concurrent_agents: 1
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :ProjectAwareRunningReconcileOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    now = DateTime.utc_now()
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{
+        project_a_key => %{
+          pid: self(),
+          ref: make_ref(),
+          identifier: "PROJECT-A-RUN",
+          issue_identifier: "PROJECT-A-RUN",
+          issue_id: issue_id,
+          issue: %Issue{id: issue_id, identifier: "PROJECT-A-RUN", title: "project a runtime issue", state: "Todo"},
+          project_key: "project-a",
+          started_at: now
+        },
+        project_b_key => %{
+          pid: self(),
+          ref: make_ref(),
+          identifier: "PROJECT-B-RUN",
+          issue_identifier: "PROJECT-B-RUN",
+          issue_id: issue_id,
+          issue: %Issue{id: issue_id, identifier: "PROJECT-B-RUN", title: "project b runtime issue", state: "Todo"},
+          project_key: "project-b",
+          started_at: now
+        }
+      })
+      |> Map.put(:claimed, MapSet.new([project_a_key, project_b_key]))
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        current_state.running[project_b_key].issue.state == "In Progress"
+      end)
+
+    assert state.running[project_a_key].issue.identifier == "PROJECT-A-RUN"
+    assert state.running[project_a_key].issue.state == "Todo"
+    assert state.running[project_b_key].issue.identifier == "PROJECT-B-RUN"
+    assert state.running[project_b_key].issue.state == "In Progress"
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
@@ -1246,9 +1556,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
          ]}
     })
 
-    Application.put_env(:symphony_elixir, :v012_fix_issue_state_results, %{
-      ids: ["issue-project-a"],
-      result:
+    Application.put_env(:symphony_elixir, :v012_fix_project_state_results, %{
+      "project-a" =>
         {:ok,
          [
            %Issue{
@@ -1257,6 +1566,16 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              title: "project a candidate",
              state: "Todo"
            }
+         ]},
+      "project-b" =>
+        {:ok,
+         [
+           %Issue{
+             id: "issue-project-b",
+             identifier: "PROJECT-B-1",
+             title: "project b candidate",
+             state: "Done"
+           }
          ]}
     })
 
@@ -1264,7 +1583,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       tracker_api_token: "token",
       poll_interval_ms: 50,
       max_concurrent_agents: 1,
-      hook_before_run: "exit 17"
+      hook_before_run: "exit 17",
+      workspace_root: Path.join(System.tmp_dir!(), "symphony-v014-project-aware-poll-workspaces")
     )
 
     orchestrator_name = Module.concat(__MODULE__, :ProjectAwarePollOrchestrator)
@@ -1292,7 +1612,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       wait_for_state(pid, fn current_state ->
         match?(
           %{project_key: "project-a", identifier: "PROJECT-A-1"},
-          current_state.retry_attempts["issue-project-a"]
+          current_state.retry_attempts[{"project-a", "issue-project-a"}]
         )
       end)
 
@@ -1300,9 +1620,12 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive :project_registry_normalized_entries_called
     assert_receive {:project_fetch_candidate_issues_called, "project-a", ["Todo", "In Progress"]}
     assert_receive {:project_fetch_candidate_issues_called, "project-b", ["Todo", "In Progress"]}
-    assert_receive {:fetch_issue_states_by_ids_called, ["issue-project-a"]}
-    assert %{project_key: "project-a", identifier: "PROJECT-A-1"} = state.retry_attempts["issue-project-a"]
-    assert MapSet.member?(state.claimed, "issue-project-a")
+    assert_receive {:project_fetch_issues_by_states_called, "project-a",
+                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert %{project_key: "project-a", identifier: "PROJECT-A-1"} =
+             state.retry_attempts[{"project-a", "issue-project-a"}]
+
+    assert MapSet.member?(state.claimed, {"project-a", "issue-project-a"})
   end
 
   test "orchestrator startup cleanup uses project-aware terminal states fetch and fails closed before identifier-only deletion" do
@@ -1471,6 +1794,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     issue_id = "issue-retry-project-a"
+    runtime_key = {"project-a", issue_id}
+    occupied_runtime_key = {"project-b", occupied_issue_id = "issue-occupying-slot"}
     orchestrator_name = Module.concat(__MODULE__, :ProjectAwareRetryOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1481,8 +1806,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     initial_state = :sys.get_state(pid)
-
-    occupied_issue_id = "issue-occupying-slot"
 
     worker_pid =
       spawn(fn ->
@@ -1507,7 +1830,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         initial_state
         | running: %{
-            occupied_issue_id => %{
+            occupied_runtime_key => %{
               pid: worker_pid,
               ref: make_ref(),
               identifier: "MT-OCCUPIED",
@@ -1517,13 +1840,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           },
           claimed:
             initial_state.claimed
-            |> MapSet.put(issue_id)
-            |> MapSet.put(occupied_issue_id),
-          retry_attempts: %{issue_id => retry_entry}
+            |> MapSet.put(runtime_key)
+            |> MapSet.put(occupied_runtime_key),
+          retry_attempts: %{runtime_key => retry_entry}
       }
     end)
 
-    send(pid, {:retry_issue, issue_id, retry_entry.retry_token})
+    send(pid, {:retry_issue, runtime_key, retry_entry.retry_token})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
@@ -1531,8 +1854,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive :project_registry_normalized_entries_called
     refute_receive :legacy_fetch_candidate_issues_called
     assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, runtime_key)
+    assert MapSet.member?(state.claimed, runtime_key)
   end
 
   test "retry revalidation releases claim when active issue is no longer routed to this worker" do
@@ -1569,6 +1892,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     issue_id = "issue-retry-project-a-rerouted"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :ProjectAwareRetryReroutedOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1585,7 +1909,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         initial_state
         | retry_attempts: %{
-            issue_id => %{
+            runtime_key => %{
               attempt: 1,
               timer_ref: nil,
               retry_token: retry_token,
@@ -1597,19 +1921,19 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               project_key: "project-a"
             }
           },
-          claimed: MapSet.put(initial_state.claimed, issue_id)
+          claimed: MapSet.put(initial_state.claimed, runtime_key)
       }
     end)
 
-    send(pid, {:retry_issue, issue_id, retry_token})
+    send(pid, {:retry_issue, runtime_key, retry_token})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
     assert_receive :project_registry_normalized_entries_called
     assert_receive {:project_fetch_issues_by_states_called, "project-a",
                     ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.claimed, issue_id)
+    refute Map.has_key?(state.retry_attempts, runtime_key)
+    refute MapSet.member?(state.claimed, runtime_key)
   end
 
   test "retry terminal cleanup fails closed when dispatch runtime metadata is incomplete" do
@@ -1642,6 +1966,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
 
     issue_id = "issue-terminal-cleanup-fail-closed"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :RetryTerminalCleanupFailClosedOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1658,7 +1983,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         initial_state
         | retry_attempts: %{
-            issue_id => %{
+            runtime_key => %{
               attempt: 1,
               timer_ref: nil,
               retry_token: retry_token,
@@ -1670,22 +1995,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               workspace_path: nil
             }
           },
-          claimed: MapSet.put(initial_state.claimed, issue_id)
+          claimed: MapSet.put(initial_state.claimed, runtime_key)
       }
     end)
 
-    send(pid, {:retry_issue, issue_id, retry_token})
+    send(pid, {:retry_issue, runtime_key, retry_token})
 
     state =
       wait_for_state(pid, fn current_state ->
-        match?(%{error: "cleanup_failed:" <> _}, current_state.blocked[issue_id])
+        match?(%{error: "cleanup_failed:" <> _}, current_state.blocked[runtime_key])
       end)
 
     assert_receive :project_registry_normalized_entries_called
     assert_receive {:project_fetch_issues_by_states_called, "project-a",
                     ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
-    assert MapSet.member?(state.claimed, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.claimed, runtime_key)
+    refute Map.has_key?(state.retry_attempts, runtime_key)
 
     assert %{
              identifier: "PROJECT-A-DONE",
@@ -1693,7 +2018,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              worker_host: nil,
              workspace_path: nil,
              error: "cleanup_failed:" <> _
-           } = state.blocked[issue_id]
+           } = state.blocked[runtime_key]
   end
 
   test "normal completion retry preserves project_key in value-level metadata" do
@@ -1732,7 +2057,64 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     Process.sleep(50)
     state = :sys.get_state(pid)
 
-    assert %{project_key: "project-a", identifier: "PROJECT-A-CONT"} = state.retry_attempts[issue_id]
+    assert %{project_key: "project-a", identifier: "PROJECT-A-CONT"} = state.retry_attempts[{"project-a", issue_id}]
+  end
+
+  test "normal completion retry stores retry metadata under a project-aware runtime key" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "issue-continuation-project-aware-key"
+    runtime_key = {"project-a", issue_id}
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationProjectAwareKeyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    ref = make_ref()
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "PROJECT-A-CONT-2",
+      issue_identifier: "PROJECT-A-CONT-2",
+      issue: %Issue{id: issue_id, identifier: "PROJECT-A-CONT-2", title: "continuation", state: "In Progress"},
+      project_key: "project-a",
+      worker_host: "dm-dev2",
+      workspace_path: "/workspaces/project-a/PROJECT-A-CONT-2__issue",
+      attempt: 2,
+      retry_attempt: 1,
+      session_id: "thread-continuation-project-aware",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{
+             project_key: "project-a",
+             issue_id: ^issue_id,
+             issue_identifier: "PROJECT-A-CONT-2",
+             identifier: "PROJECT-A-CONT-2",
+             worker_host: "dm-dev2",
+             workspace_path: "/workspaces/project-a/PROJECT-A-CONT-2__issue",
+             last_attempt: 2
+           } = state.retry_attempts[runtime_key]
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    assert MapSet.member?(state.completed, issue_id)
+    refute MapSet.member?(state.completed, runtime_key)
   end
 
   test "retry revalidation fails closed when retry metadata has no project_key" do
@@ -1763,6 +2145,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               retry_token: retry_token,
               due_at_ms: System.monotonic_time(:millisecond) + 1_000,
               identifier: "PROJECT-UNKNOWN",
+              issue_id: issue_id,
               error: "boom",
               worker_host: nil,
               workspace_path: nil
@@ -1779,7 +2162,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute_receive :legacy_fetch_candidate_issues_called
     refute_receive {:project_fetch_candidate_issues_called, _project_key, _states}
     refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
   end
 
   test "normal completion does not enqueue retry when running entry has no stable project_key" do
@@ -1823,7 +2206,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Map.has_key?(state.retry_attempts, issue_id)
-    refute MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, issue_id)
   end
 
   test "retry revalidation reschedules when target project fetch fails but another project succeeds" do
@@ -1858,6 +2241,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
 
     issue_id = "issue-retry-project-a-timeout"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :RetryTargetProjectFailureOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1874,7 +2258,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         initial_state
         | retry_attempts: %{
-            issue_id => %{
+            runtime_key => %{
               attempt: 1,
               timer_ref: nil,
               retry_token: retry_token,
@@ -1886,11 +2270,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               workspace_path: nil
             }
           },
-          claimed: MapSet.put(initial_state.claimed, issue_id)
+          claimed: MapSet.put(initial_state.claimed, runtime_key)
       }
     end)
 
-    send(pid, {:retry_issue, issue_id, retry_token})
+    send(pid, {:retry_issue, runtime_key, retry_token})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
@@ -1899,13 +2283,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                     ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
     assert_receive {:project_fetch_issues_by_states_called, "project-b",
                     ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
-    assert MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, runtime_key)
 
     assert %{
              attempt: 2,
              project_key: "project-a",
              error: "retry poll failed: target project fetch failed"
-           } = state.retry_attempts[issue_id]
+           } = state.retry_attempts[runtime_key]
   end
 
   test "retry revalidation reschedules when target project is missing from aggregate results" do
@@ -1932,6 +2316,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
 
     issue_id = "issue-retry-project-a-missing-result"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :RetryMissingProjectResultOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -1948,7 +2333,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       %{
         initial_state
         | retry_attempts: %{
-            issue_id => %{
+            runtime_key => %{
               attempt: 1,
               timer_ref: nil,
               retry_token: retry_token,
@@ -1960,11 +2345,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
               workspace_path: nil
             }
           },
-          claimed: MapSet.put(initial_state.claimed, issue_id)
+          claimed: MapSet.put(initial_state.claimed, runtime_key)
       }
     end)
 
-    send(pid, {:retry_issue, issue_id, retry_token})
+    send(pid, {:retry_issue, runtime_key, retry_token})
     Process.sleep(50)
     state = :sys.get_state(pid)
 
@@ -1974,13 +2359,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                       %{project_key: "project-a", enabled: true, max_concurrent_agents: 15, display_name: nil},
                       %{project_key: "project-b", enabled: true, max_concurrent_agents: 15, display_name: nil}
                     ]}
-    assert MapSet.member?(state.claimed, issue_id)
+    assert MapSet.member?(state.claimed, runtime_key)
 
     assert %{
              attempt: 2,
              project_key: "project-a",
              error: "retry poll failed: target project missing from aggregate result"
-           } = state.retry_attempts[issue_id]
+           } = state.retry_attempts[runtime_key]
   end
 
   test "orchestrator restarts stalled workers with retry backoff" do
@@ -1990,6 +2375,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     )
 
     issue_id = "issue-stall"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :StallOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -2024,8 +2410,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
     end)
 
     send(pid, :tick)
@@ -2033,7 +2419,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     refute Process.alive?(worker_pid)
-    refute Map.has_key?(state.running, issue_id)
+    refute Map.has_key?(state.running, runtime_key)
 
     assert %{
              attempt: 1,
@@ -2041,7 +2427,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              identifier: "MT-STALL",
              error: "stalled for " <> _,
              project_key: "project-a"
-           } = state.retry_attempts[issue_id]
+           } = state.retry_attempts[runtime_key]
 
     assert is_integer(due_at_ms)
     remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
@@ -2123,6 +2509,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
 
     issue_id = "issue-running-terminal-cleanup-fail-closed"
+    runtime_key = {"project-a", issue_id}
     orchestrator_name = Module.concat(__MODULE__, :RunningTerminalCleanupFailClosedOrchestrator)
     {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
 
@@ -2157,8 +2544,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     :sys.replace_state(pid, fn _ ->
       initial_state
-      |> Map.put(:running, %{issue_id => running_entry})
-      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
     end)
 
     state =
@@ -2167,7 +2554,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
           %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
         ], current_state)
 
-        match?(%{error: "cleanup_failed:" <> _}, updated.blocked[issue_id])
+        match?(%{error: "cleanup_failed:" <> _}, updated.blocked[runtime_key])
       end)
 
     updated_state =
@@ -2175,8 +2562,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
       ], state)
 
-    assert MapSet.member?(updated_state.claimed, issue_id)
-    refute Map.has_key?(updated_state.retry_attempts, issue_id)
+    assert MapSet.member?(updated_state.claimed, runtime_key)
+    refute Map.has_key?(updated_state.retry_attempts, runtime_key)
 
     assert %{
              identifier: "MT-RUN-DONE",
@@ -2184,7 +2571,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              worker_host: nil,
              workspace_path: nil,
              error: "cleanup_failed:" <> _
-           } = updated_state.blocked[issue_id]
+           } = updated_state.blocked[runtime_key]
   end
 
   test "orchestrator blocks failed workers after app-server reports input required" do
@@ -2288,6 +2675,73 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              identifier: "MT-INPUT-NORMAL",
              error: "codex turn requires operator input"
            } = state.blocked[issue_id]
+  end
+
+  test "input-required block keeps blocked state under a project-aware runtime key" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil)
+
+    issue_id = "issue-input-required-project-aware"
+    runtime_key = {"project-a", issue_id}
+    orchestrator_name = Module.concat(__MODULE__, :InputRequiredProjectAwareBlockOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    ref = make_ref()
+    started_at = DateTime.utc_now()
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "MT-INPUT-PA",
+      issue_identifier: "MT-INPUT-PA",
+      issue: %Issue{id: issue_id, identifier: "MT-INPUT-PA", state: "In Progress"},
+      project_key: "project-a",
+      worker_host: "dm-dev2",
+      workspace_path: "/workspaces/project-a/MT-INPUT-PA__issue",
+      attempt: 4,
+      session_id: "thread-input-project-aware",
+      last_codex_message: %{
+        event: :turn_input_required,
+        message: %{"method" => "mcpServer/elicitation/request"},
+        timestamp: started_at
+      },
+      last_codex_timestamp: started_at,
+      last_codex_event: :turn_input_required,
+      started_at: started_at
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:shutdown, :input_required}})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.running, runtime_key)
+    refute Map.has_key?(state.retry_attempts, runtime_key)
+    assert MapSet.member?(state.claimed, runtime_key)
+    refute MapSet.member?(state.claimed, issue_id)
+
+    assert %{
+             identifier: "MT-INPUT-PA",
+             issue_identifier: "MT-INPUT-PA",
+             project_key: "project-a",
+             worker_host: "dm-dev2",
+             workspace_path: "/workspaces/project-a/MT-INPUT-PA__issue",
+             attempt: 4,
+             error: "codex turn requires operator input"
+           } = state.blocked[runtime_key]
+
+    refute Map.has_key?(state.blocked, issue_id)
   end
 
   test "status dashboard renders offline marker to terminal" do

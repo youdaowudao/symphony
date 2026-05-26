@@ -1,0 +1,720 @@
+<style>
+  .v2-note {
+    margin: 0 0 1.1rem;
+    padding: 0.9rem 1rem;
+    border-radius: 12px;
+    background: linear-gradient(90deg, rgba(0,113,227,0.10), rgba(52,199,89,0.06));
+    color: var(--text-secondary);
+    font-size: 0.93rem;
+  }
+
+  .demo-shell {
+    border: 1px solid #d2d7de;
+    background: #eef2f6;
+    border-radius: 18px;
+    overflow: hidden;
+    box-shadow: 0 22px 60px rgba(15, 23, 42, 0.12);
+  }
+
+  .demo-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.9rem 1.15rem;
+    background: linear-gradient(180deg, #f8fbfd, #edf3f8);
+    border-bottom: 1px solid #d6dde6;
+    color: #506074;
+    font-size: 0.76rem;
+    letter-spacing: 0.02em;
+  }
+
+  .demo-brand {
+    display: grid;
+    gap: 0.2rem;
+  }
+
+  .demo-brand strong {
+    color: #152434;
+    font-size: 1rem;
+    letter-spacing: -0.02em;
+  }
+
+  .demo-status {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    color: #0f513f;
+    font-weight: 600;
+  }
+
+  .demo-status::before {
+    content: "";
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: #34c759;
+    box-shadow: 0 0 0 4px rgba(52, 199, 89, 0.12);
+  }
+
+  .demo-body {
+    padding: 1rem;
+    display: grid;
+    gap: 0.95rem;
+  }
+
+  .summary-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr 1fr 1.15fr 0.9fr 0.9fr;
+    gap: 0.7rem;
+  }
+
+  .summary-card {
+    background: white;
+    border: 1px solid #dde4eb;
+    border-radius: 14px;
+    padding: 0.8rem 0.85rem;
+    min-height: 104px;
+    display: grid;
+    align-content: start;
+    gap: 0.28rem;
+  }
+
+  .summary-card .label {
+    margin: 0;
+    color: #708195;
+    font-size: 0.66rem;
+    letter-spacing: 0.06em;
+  }
+
+  .summary-card .value {
+    font-size: 1.8rem;
+    line-height: 1;
+    color: #111827;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+  }
+
+  .summary-card .sub {
+    color: #617182;
+    font-size: 0.73rem;
+    line-height: 1.35;
+  }
+
+  .summary-card.alert {
+    background: linear-gradient(180deg, #fff7f7, #fffdfd);
+    border-color: #f2b7b7;
+  }
+
+  .summary-card.warn {
+    background: linear-gradient(180deg, #fff9ef, #fffdf8);
+    border-color: #f4d39d;
+  }
+
+  .summary-card .inline-stat {
+    display: flex;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    margin-top: 0.12rem;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    padding: 0.2rem 0.48rem;
+    font-size: 0.67rem;
+    border: 1px solid transparent;
+    background: #f3f6f9;
+    color: #445466;
+  }
+
+  .pill.red {
+    background: #feeceb;
+    border-color: #f7c1bc;
+    color: #9a291d;
+  }
+
+  .pill.amber {
+    background: #fff4da;
+    border-color: #f6db9c;
+    color: #935d00;
+  }
+
+  .pill.blue {
+    background: #e7f0ff;
+    border-color: #c8dafd;
+    color: #1f57b8;
+  }
+
+  .main-grid {
+    display: grid;
+    grid-template-columns: 0.95fr 1.45fr;
+    gap: 0.95rem;
+    align-items: start;
+  }
+
+  .panel {
+    background: white;
+    border: 1px solid #dde4eb;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: end;
+    gap: 0.8rem;
+    padding: 0.9rem 1rem 0.72rem;
+    border-bottom: 1px solid #edf1f5;
+    background: linear-gradient(180deg, #ffffff, #fafbfd);
+  }
+
+  .panel-title {
+    display: grid;
+    gap: 0.18rem;
+  }
+
+  .panel-title h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: #16202c;
+    letter-spacing: -0.02em;
+  }
+
+  .panel-title p {
+    margin: 0;
+    color: #66768a;
+    font-size: 0.75rem;
+  }
+
+  .panel-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    border-radius: 999px;
+    background: #fff1f1;
+    border: 1px solid #f2b7b7;
+    color: #9a291d;
+    padding: 0.28rem 0.55rem;
+    font-size: 0.7rem;
+    font-weight: 700;
+  }
+
+  .panel-body {
+    padding: 0.78rem;
+    display: grid;
+    gap: 0.65rem;
+  }
+
+  .anomaly-list,
+  .running-list,
+  .todo-list {
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .anomaly-item {
+    border: 1px solid #ebc1be;
+    background: linear-gradient(180deg, #fff8f7, #fffdfd);
+    border-radius: 14px;
+    padding: 0.75rem 0.82rem;
+    display: grid;
+    gap: 0.45rem;
+  }
+
+  .anomaly-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.65rem;
+    align-items: center;
+  }
+
+  .issue-ident {
+    display: flex;
+    align-items: center;
+    gap: 0.48rem;
+    flex-wrap: wrap;
+  }
+
+  .issue-code {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #1a2431;
+  }
+
+  .issue-type {
+    border-radius: 999px;
+    padding: 0.18rem 0.48rem;
+    font-size: 0.65rem;
+    font-weight: 700;
+    border: 1px solid transparent;
+  }
+
+  .issue-type.stale {
+    background: #feeceb;
+    border-color: #f7c1bc;
+    color: #9a291d;
+  }
+
+  .issue-type.blocked {
+    background: #fff0d9;
+    border-color: #f7d79a;
+    color: #8a5b04;
+  }
+
+  .issue-type.retry {
+    background: #fff7ea;
+    border-color: #efd39a;
+    color: #8a6100;
+  }
+
+  .issue-type.cleanup {
+    background: #fce7f3;
+    border-color: #f6bfdc;
+    color: #9d215e;
+  }
+
+  .age-chip {
+    border-radius: 999px;
+    background: #1b2633;
+    color: white;
+    padding: 0.2rem 0.5rem;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .anomaly-main {
+    color: #1f2937;
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+
+  .anomaly-meta {
+    display: flex;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    color: #6b7280;
+    font-size: 0.7rem;
+  }
+
+  .running-table {
+    display: grid;
+    gap: 0.46rem;
+  }
+
+  .running-head,
+  .running-row {
+    display: grid;
+    grid-template-columns: 82px 76px 98px 78px 88px 1fr 64px;
+    gap: 0.55rem;
+    align-items: center;
+  }
+
+  .running-head {
+    padding: 0 0.3rem;
+    color: #718196;
+    font-size: 0.67rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .running-row {
+    border: 1px solid #e7ecf2;
+    border-radius: 12px;
+    background: #fbfcfd;
+    padding: 0.58rem 0.62rem;
+    font-size: 0.74rem;
+    color: #1f2937;
+  }
+
+  .running-row.near-stale {
+    background: #fff8ed;
+    border-color: #f0d5a4;
+  }
+
+  .run-issue {
+    font-family: ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, monospace;
+    font-weight: 700;
+    color: #17212f;
+  }
+
+  .run-muted {
+    color: #6b7280;
+    font-size: 0.69rem;
+  }
+
+  .session-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    border: 1px solid #d8e0e8;
+    background: white;
+    color: #465465;
+    padding: 0.22rem 0.46rem;
+    font-size: 0.64rem;
+    font-weight: 700;
+  }
+
+  .todo-panel {
+    background: white;
+    border: 1px solid #dde4eb;
+    border-radius: 16px;
+    overflow: hidden;
+  }
+
+  .todo-grid {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr;
+    gap: 0.9rem;
+    padding: 0.82rem;
+  }
+
+  .todo-side {
+    display: grid;
+    gap: 0.6rem;
+  }
+
+  .todo-summary {
+    display: grid;
+    gap: 0.42rem;
+  }
+
+  .todo-summary-row {
+    display: grid;
+    grid-template-columns: 1fr 64px 64px 1fr;
+    gap: 0.5rem;
+    align-items: center;
+    border-radius: 12px;
+    background: #f8fafc;
+    border: 1px solid #e6ebf1;
+    padding: 0.55rem 0.62rem;
+    font-size: 0.74rem;
+    color: #243447;
+  }
+
+  .todo-chain {
+    border-radius: 14px;
+    border: 1px solid #e6ebf1;
+    background: #fbfcfd;
+    padding: 0.72rem 0.76rem;
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .todo-chain-item {
+    display: grid;
+    grid-template-columns: 84px 1fr 1fr;
+    gap: 0.55rem;
+    align-items: center;
+    font-size: 0.73rem;
+    color: #1f2937;
+  }
+
+  .todo-chain-item .arrow {
+    color: #96a2b2;
+    text-align: center;
+  }
+
+  .foot-note {
+    margin-top: 1.1rem;
+    color: var(--text-secondary);
+    font-size: 0.84rem;
+  }
+</style>
+
+<h2>B 方向完整 demo</h2>
+<p class="subtitle">这版按你刚才的要求重做：宽屏、摘要优先、左侧统一异常区直接列 issue、右侧正常 running 第一屏可见、保留 token / runtime 等现有统计、去掉 Rate limits、底部增加 todo 池与 blocked-by 预留区。</p>
+
+<div class="v2-note">
+  这个 demo 是 <strong>B 的骨架</strong>，但吸收了你在 <strong>C</strong> 里想保留的信息量。重点不是“更漂亮”，而是第一屏排障不能出问题。
+</div>
+
+<div class="demo-shell">
+  <div class="demo-topbar">
+    <div class="demo-brand">
+      <span>Symphony Observability</span>
+      <strong>Wide Operations Workbench</strong>
+    </div>
+    <div class="demo-status">live heartbeat healthy · stale threshold 5m</div>
+  </div>
+
+  <div class="demo-body">
+    <div class="summary-grid">
+      <div class="summary-card">
+        <p class="label">Running now</p>
+        <div class="value">12</div>
+        <div class="sub">第一屏必须直接知道当前有多少 agents 在跑。</div>
+      </div>
+
+      <div class="summary-card alert">
+        <p class="label">Need action</p>
+        <div class="value">9</div>
+        <div class="sub">统一异常入口，不再拆成多个小区块。</div>
+        <div class="inline-stat">
+          <span class="pill red">4 stale</span>
+          <span class="pill red">2 blocked</span>
+          <span class="pill amber">3 retrying</span>
+        </div>
+      </div>
+
+      <div class="summary-card">
+        <p class="label">Total runtime</p>
+        <div class="value">7h 14m</div>
+        <div class="sub">completed + active sessions，总时长继续保留。</div>
+      </div>
+
+      <div class="summary-card">
+        <p class="label">Token totals</p>
+        <div class="value">482k</div>
+        <div class="sub">In 271k / Out 211k，沿用现有 token 统计思路。</div>
+      </div>
+
+      <div class="summary-card warn">
+        <p class="label">Oldest stale</p>
+        <div class="value">8m 12s</div>
+        <div class="sub">把“长时间没回复”的风险提升到首页第一层。</div>
+      </div>
+
+      <div class="summary-card">
+        <p class="label">Todo pool</p>
+        <div class="value">34</div>
+        <div class="sub">未来自动化池的待处理卡片总量预留到顶部。</div>
+      </div>
+    </div>
+
+    <div class="main-grid">
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <h3>需要处理</h3>
+            <p>统一异常区，直接列 issue，不先显示抽象人数或项目块。</p>
+          </div>
+          <span class="panel-badge">按严重度排序</span>
+        </div>
+
+        <div class="panel-body anomaly-list">
+          <article class="anomaly-item">
+            <div class="anomaly-top">
+              <div class="issue-ident">
+                <span class="issue-code">MT-918</span>
+                <span class="pill blue">proj-a</span>
+                <span class="issue-type stale">stale</span>
+              </div>
+              <span class="age-chip">8m 12s</span>
+            </div>
+            <div class="anomaly-main">agent message 在 “planning next tool call” 后无新输出，倒计时已越过阈值。</div>
+            <div class="anomaly-meta">
+              <span>turn 14</span>
+              <span>session thre…567890</span>
+              <span>workspace /ws/proj-a/MT-918</span>
+              <span>JSON details</span>
+            </div>
+          </article>
+
+          <article class="anomaly-item">
+            <div class="anomaly-top">
+              <div class="issue-ident">
+                <span class="issue-code">MT-902</span>
+                <span class="pill blue">proj-b</span>
+                <span class="issue-type blocked">blocked</span>
+              </div>
+              <span class="age-chip">5m 03s</span>
+            </div>
+            <div class="anomaly-main">waiting for user input，当前 agent 已停在 operator handoff，需人工处理。</div>
+            <div class="anomaly-meta">
+              <span>last event turn_input_required</span>
+              <span>blocked at 14:32:18Z</span>
+              <span>copy thread id</span>
+            </div>
+          </article>
+
+          <article class="anomaly-item">
+            <div class="anomaly-top">
+              <div class="issue-ident">
+                <span class="issue-code">MT-411</span>
+                <span class="pill blue">proj-c</span>
+                <span class="issue-type retry">retrying</span>
+              </div>
+              <span class="age-chip">00:18</span>
+            </div>
+            <div class="anomaly-main">retrying after upstream API timeout，下一次重试窗口即将到来。</div>
+            <div class="anomaly-meta">
+              <span>attempt 2</span>
+              <span>worker host ssh-02</span>
+              <span>error budget still open</span>
+            </div>
+          </article>
+
+          <article class="anomaly-item">
+            <div class="anomaly-top">
+              <div class="issue-ident">
+                <span class="issue-code">MT-733</span>
+                <span class="pill blue">proj-a</span>
+                <span class="issue-type cleanup">cleanup_failed</span>
+              </div>
+              <span class="age-chip">2m 41s</span>
+            </div>
+            <div class="anomaly-main">workspace owner mismatch，已 fail closed，等待人工确认后再继续。</div>
+            <div class="anomaly-meta">
+              <span>host ssh-03</span>
+              <span>workspace /ws/proj-a/MT-733</span>
+              <span>manual intervention required</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <div class="panel-title">
+            <h3>正常 Running</h3>
+            <p>第一屏直接可见，列表紧凑，但保留 token、时长、最后更新时间和 session 入口。</p>
+          </div>
+          <span class="pill blue">12 active</span>
+        </div>
+
+        <div class="panel-body">
+          <div class="running-table">
+            <div class="running-head">
+              <span>Issue</span>
+              <span>Project</span>
+              <span>Age / turn</span>
+              <span>Last seen</span>
+              <span>Tokens</span>
+              <span>Latest update</span>
+              <span>Session</span>
+            </div>
+
+            <div class="running-row">
+              <span class="run-issue">MT-120</span>
+              <span class="pill blue">proj-a</span>
+              <span>18m / 12</span>
+              <span>14s ago</span>
+              <span>42.1k</span>
+              <span>tool result applied, planning next patch</span>
+              <span class="session-pill">Copy</span>
+            </div>
+
+            <div class="running-row">
+              <span class="run-issue">MT-121</span>
+              <span class="pill blue">proj-b</span>
+              <span>9m / 6</span>
+              <span>21s ago</span>
+              <span>18.4k</span>
+              <span>agent message content streaming</span>
+              <span class="session-pill">Copy</span>
+            </div>
+
+            <div class="running-row">
+              <span class="run-issue">MT-122</span>
+              <span class="pill blue">proj-c</span>
+              <span>27m / 9</span>
+              <span>32s ago</span>
+              <span>63.6k</span>
+              <span>rendered verification summary</span>
+              <span class="session-pill">Copy</span>
+            </div>
+
+            <div class="running-row near-stale">
+              <span class="run-issue">MT-123</span>
+              <span class="pill blue">proj-a</span>
+              <span>11m / 3</span>
+              <span>1m 48s</span>
+              <span>9.2k</span>
+              <span>still active, but close to stale threshold</span>
+              <span class="session-pill">Copy</span>
+            </div>
+
+            <div class="running-row">
+              <span class="run-issue">MT-124</span>
+              <span class="pill blue">proj-b</span>
+              <span>31m / 15</span>
+              <span>59s ago</span>
+              <span>84.2k</span>
+              <span>patch applied, waiting test output</span>
+              <span class="session-pill">Copy</span>
+            </div>
+
+            <div class="running-row">
+              <span class="run-issue">MT-125</span>
+              <span class="pill blue">proj-c</span>
+              <span>6m / 4</span>
+              <span>12s ago</span>
+              <span>7.4k</span>
+              <span>summarizing code review findings</span>
+              <span class="session-pill">Copy</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="todo-panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <h3>Todo pool / blocked-by 预留区</h3>
+          <p>这是你提到的后续自动化池入口。现在先把首页空间和阅读方式预留出来，后面项目增多时向下扩展即可。</p>
+        </div>
+        <span class="pill">future queue view</span>
+      </div>
+
+      <div class="todo-grid">
+        <div class="todo-side">
+          <div class="todo-summary">
+            <div class="todo-summary-row">
+              <strong>proj-a</strong>
+              <span>14 waiting</span>
+              <span>3 blocked</span>
+              <span class="run-muted">top blocker MT-918</span>
+            </div>
+            <div class="todo-summary-row">
+              <strong>proj-b</strong>
+              <span>11 waiting</span>
+              <span>1 blocked</span>
+              <span class="run-muted">top blocker MT-902</span>
+            </div>
+            <div class="todo-summary-row">
+              <strong>proj-c</strong>
+              <span>9 waiting</span>
+              <span>2 blocked</span>
+              <span class="run-muted">top blocker MT-411</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="todo-chain">
+          <div class="todo-chain-item">
+            <span class="run-issue">MT-130</span>
+            <span class="arrow">blocked by →</span>
+            <span>MT-918 · stale run still unresolved</span>
+          </div>
+          <div class="todo-chain-item">
+            <span class="run-issue">MT-131</span>
+            <span class="arrow">blocked by →</span>
+            <span>MT-902 · waiting for operator input</span>
+          </div>
+          <div class="todo-chain-item">
+            <span class="run-issue">MT-132</span>
+            <span class="arrow">blocked by →</span>
+            <span>MT-411 · retry window not reached yet</span>
+          </div>
+          <div class="todo-chain-item">
+            <span class="run-issue">MT-133</span>
+            <span class="arrow">ready →</span>
+            <span>no blocker, queued for next dispatch slot</span>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</div>
+
+<p class="foot-note">
+  你现在看这版时，重点只看三件事：第一屏是否顺手、左异常右运行是否成立、底部 todo 池预留区的方向是不是对的。下一轮我再根据你的反馈缩细节，不再重新发散。
+</p>
