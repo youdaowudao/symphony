@@ -1262,6 +1262,109 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:project_fetch_candidate_issues_called, "project-a", ["Todo", "In Progress"]}
   end
 
+  test "orchestrator poll cycle resumes dispatch after the exhausted rate-limit window elapses without a fresh update" do
+    Application.put_env(:symphony_elixir, :linear_client_module, V012FixLinearClient)
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15}
+    ])
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_candidate_results, %{
+      "project-a" =>
+        {:ok,
+         [
+           %Issue{
+             id: "issue-project-a-rate-limit-reset",
+             identifier: "PROJECT-A-RATE-LIMIT-RESET",
+             title: "rate limit reset candidate",
+             description: "should dispatch once the stale exhaustion window expires",
+             state: "Todo",
+             blocked_by: []
+           }
+         ]}
+    })
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_state_results, %{
+      "project-a" =>
+        {:ok,
+         [
+           %Issue{
+             id: "issue-project-a-rate-limit-reset",
+             identifier: "PROJECT-A-RATE-LIMIT-RESET",
+             title: "rate limit reset candidate",
+             description: "should dispatch once the stale exhaustion window expires",
+             state: "Todo",
+             blocked_by: []
+           }
+         ]}
+    })
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      poll_interval_ms: 50,
+      max_concurrent_agents: 1,
+      hook_before_run: "exit 17",
+      workspace_root: Path.join(System.tmp_dir!(), "symphony-rate-limit-reset-workspaces")
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :RateLimitResetDispatchOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    observed_at_ms = System.monotonic_time(:millisecond) - 2_000
+
+    :sys.replace_state(pid, fn state ->
+      Map.merge(state, %{
+        poll_interval_ms: 50,
+        poll_check_in_progress: true,
+        next_poll_due_at_ms: nil,
+        codex_rate_limits: %{
+          "limit_id" => "codex",
+          "primary" => %{"remaining" => 0, "limit" => 100, "reset_in_seconds" => 1},
+          "secondary" => %{"remaining" => 10, "limit" => 60, "reset_in_seconds" => 30},
+          "credits" => %{"has_credits" => true, "unlimited" => false}
+        },
+        codex_rate_limits_observed_at_ms: observed_at_ms
+      })
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        match?(
+          %{project_key: "project-a", identifier: "PROJECT-A-RATE-LIMIT-RESET"},
+          current_state.retry_attempts[{"project-a", "issue-project-a-rate-limit-reset"}]
+        )
+      end)
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{polling: %{checking?: false}, rate_limits: nil} -> true
+        _ -> false
+      end)
+
+    assert %{project_key: "project-a", identifier: "PROJECT-A-RATE-LIMIT-RESET"} =
+             state.retry_attempts[{"project-a", "issue-project-a-rate-limit-reset"}]
+
+    assert snapshot.rate_limits == nil
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:project_fetch_candidate_issues_called, "project-a", ["Todo", "In Progress"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+  end
+
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
     issue_id = "issue-token-precedence"
 
@@ -2397,6 +2500,56 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     assert %{worker_host: "worker-a"} = state.retry_attempts[runtime_key]
     assert Orchestrator.select_worker_host_for_test(state, nil) == "worker-b"
+  end
+
+  test "generic startup port exits do not pause a worker host" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      worker_ssh_hosts: ["worker-a", "worker-b"],
+      worker_max_concurrent_agents_per_host: 1
+    )
+
+    issue_id = "issue-worker-host-port-exit"
+    runtime_key = {"project-a", issue_id}
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :WorkerHostPortExitOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "PROJECT-A-HOST-PORT-EXIT",
+      issue_identifier: "PROJECT-A-HOST-PORT-EXIT",
+      project_key: "project-a",
+      worker_host: "worker-a",
+      issue: %Issue{id: issue_id, identifier: "PROJECT-A-HOST-PORT-EXIT", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), {:shutdown, {:port_exit, 75}}})
+
+    state =
+      wait_for_state(pid, fn state ->
+        match?(%{^runtime_key => %{worker_host: "worker-a"}}, state.retry_attempts)
+      end)
+
+    assert %{worker_host: "worker-a"} = state.retry_attempts[runtime_key]
+    assert state.worker_host_backoffs == %{}
+    assert Orchestrator.select_worker_host_for_test(state, nil) == "worker-a"
   end
 
   test "retry revalidation fails closed when retry metadata has no project_key" do

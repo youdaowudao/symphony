@@ -41,6 +41,7 @@ defmodule SymphonyElixir.Orchestrator do
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
+      codex_rate_limits_observed_at_ms: nil,
       worker_host_backoffs: %{}
     ]
   end
@@ -65,6 +66,7 @@ defmodule SymphonyElixir.Orchestrator do
       tick_token: nil,
       codex_totals: @empty_codex_totals,
       codex_rate_limits: nil,
+      codex_rate_limits_observed_at_ms: nil,
       worker_host_backoffs: %{}
     }
 
@@ -310,6 +312,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state =
       state
+      |> refresh_codex_rate_limits()
       |> reconcile_running_issues()
       |> reconcile_blocked_issues()
 
@@ -2274,6 +2277,7 @@ defmodule SymphonyElixir.Orchestrator do
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
+    state = refresh_codex_rate_limits(state)
     now = DateTime.utc_now()
     now_ms = System.monotonic_time(:millisecond)
 
@@ -2490,6 +2494,14 @@ defmodule SymphonyElixir.Orchestrator do
     }
   end
 
+  defp refresh_codex_rate_limits(%State{} = state) do
+    if codex_rate_limit_active?(state) do
+      state
+    else
+      %{state | codex_rate_limits: nil, codex_rate_limits_observed_at_ms: nil}
+    end
+  end
+
   defp retry_candidate_issue?(%Issue{} = issue, terminal_states) do
     candidate_issue?(issue, active_state_set(), terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states)
@@ -2512,7 +2524,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp apply_codex_rate_limits(%State{} = state, update) when is_map(update) do
     case extract_rate_limits(update) do
       %{} = rate_limits ->
-        %{state | codex_rate_limits: rate_limits}
+        %{
+          state
+          | codex_rate_limits: rate_limits,
+            codex_rate_limits_observed_at_ms: System.monotonic_time(:millisecond)
+        }
 
       _ ->
         state
@@ -2716,10 +2732,29 @@ defmodule SymphonyElixir.Orchestrator do
   defp rate_limits_map?(_payload), do: false
 
   defp codex_dispatch_allowed?(%State{} = state) do
-    not codex_rate_limit_active?(Map.get(state, :codex_rate_limits))
+    not codex_rate_limit_active?(state)
   end
 
   defp codex_dispatch_allowed?(_state), do: true
+
+  defp codex_rate_limit_active?(%State{} = state) do
+    rate_limits = Map.get(state, :codex_rate_limits)
+    observed_at_ms = Map.get(state, :codex_rate_limits_observed_at_ms)
+
+    cond do
+      not is_map(rate_limits) ->
+        false
+
+      bucket_active?(rate_limits, observed_at_ms, :primary) ->
+        true
+
+      bucket_active?(rate_limits, observed_at_ms, :secondary) ->
+        true
+
+      true ->
+        false
+    end
+  end
 
   defp codex_rate_limit_active?(rate_limits) when is_map(rate_limits) do
     primary = Map.get(rate_limits, :primary) || Map.get(rate_limits, "primary")
@@ -2729,6 +2764,11 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp codex_rate_limit_active?(_rate_limits), do: false
+
+  defp bucket_active?(rate_limits, observed_at_ms, bucket_key) do
+    bucket = Map.get(rate_limits, bucket_key) || Map.get(rate_limits, Atom.to_string(bucket_key))
+    rate_limit_bucket_exhausted?(bucket) and not rate_limit_bucket_reset_elapsed?(bucket, observed_at_ms)
+  end
 
   defp rate_limit_bucket_exhausted?(bucket) when is_map(bucket) do
     bucket
@@ -2741,6 +2781,26 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp rate_limit_bucket_exhausted?(_bucket), do: false
+
+  defp rate_limit_bucket_reset_elapsed?(bucket, observed_at_ms) when is_map(bucket) and is_integer(observed_at_ms) do
+    case reset_in_seconds(bucket) do
+      reset_seconds when is_integer(reset_seconds) and reset_seconds >= 0 ->
+        System.monotonic_time(:millisecond) >= observed_at_ms + reset_seconds * 1_000
+
+      _ ->
+        false
+    end
+  end
+
+  defp rate_limit_bucket_reset_elapsed?(_bucket, _observed_at_ms), do: false
+
+  defp reset_in_seconds(bucket) when is_map(bucket) do
+    bucket
+    |> Map.get(:reset_in_seconds, Map.get(bucket, "reset_in_seconds"))
+    |> parse_integer_like()
+  end
+
+  defp reset_in_seconds(_bucket), do: nil
 
   defp parse_integer_like(value) when is_integer(value), do: value
 
@@ -2825,9 +2885,6 @@ defmodule SymphonyElixir.Orchestrator do
          _startup_failed?
        ),
        do: true
-
-  defp worker_host_failure_reason?({:port_exit, _status}, _worker_host, startup_failed?),
-    do: startup_failed?
 
   defp worker_host_failure_reason?(%RuntimeError{message: message}, worker_host, startup_failed?),
     do: worker_host_failure_message?(message, worker_host, startup_failed?)
@@ -2947,11 +3004,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp retry_error_suffix(error) when is_binary(error), do: " error=#{error}"
   defp retry_error_suffix(_error), do: ""
 
-  defp worker_host_failure_message?(message, worker_host, startup_failed?)
+  defp worker_host_failure_message?(message, worker_host, _startup_failed?)
        when is_binary(message) and is_binary(worker_host) do
     (String.contains?(message, "workspace_prepare_failed") and String.contains?(message, worker_host)) or
-      (String.contains?(message, "invalid_workspace_cwd") and String.contains?(message, worker_host)) or
-      (startup_failed? and String.contains?(message, "port_exit"))
+      (String.contains?(message, "invalid_workspace_cwd") and String.contains?(message, worker_host))
   end
 
   defp worker_host_failure_message?(_message, _worker_host, _startup_failed?), do: false

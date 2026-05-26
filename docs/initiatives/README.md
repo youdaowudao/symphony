@@ -8,12 +8,12 @@
 2. `global-planning/`：长期愿景、成功标准、路线图、里程碑
 3. `stage-plans/`：阶段规划、阶段门禁、交接要求
 4. `decision-records/`：长期主题里的关键裁决与路线冻结
-5. `SPEC/需求阶段分析详细要求.md`：需求分析与 PLAN 阶段的详细要求
+5. `SPEC/`：长期有效、可直接被实现和 review 引用的合同文档
 
 推荐阅读顺序：
 
 1. [CHANGELOG.md](./CHANGELOG.md)
-2. [SPEC/需求阶段分析详细要求.md](./SPEC/需求阶段分析详细要求.md)
+2. [SPEC/README.md](./SPEC/README.md)
 3. [global-planning/README.md](./global-planning/README.md)
 4. [decision-records/README.md](./decision-records/README.md)
 5. [stage-plans/README.md](./stage-plans/README.md)

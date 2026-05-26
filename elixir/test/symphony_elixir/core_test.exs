@@ -1107,6 +1107,31 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.select_worker_host_for_test(state, nil) == "worker-b"
   end
 
+  test "select_worker_host_for_test falls back when the preferred ssh host is paused" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      worker_ssh_hosts: ["worker-a", "worker-b"],
+      worker_max_concurrent_agents_per_host: 2
+    )
+
+    state =
+      %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new(),
+        blocked: %{},
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+      |> Map.put(:worker_host_backoffs, %{
+        "worker-a" => %{
+          until_ms: System.monotonic_time(:millisecond) + 30_000,
+          attempt: 1,
+          reason: {:workspace_prepare_failed, "worker-a", 75, "prepare failed"}
+        }
+      })
+
+    assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-b"
+  end
+
   test "project-aware dispatch gate blocks new Codex starts when codex rate limits are exhausted" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
 
@@ -1133,6 +1158,38 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     refute Orchestrator.should_dispatch_project_candidate_for_test(issue, "project-a", 5, state)
+  end
+
+  test "project-aware dispatch gate lifts automatically after the reset window passes without a fresh rate-limit update" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue = %Issue{
+      id: "issue-rate-limit-reset",
+      identifier: "PROJECT-A-RATE-LIMIT-RESET",
+      title: "dispatch candidate",
+      description: "should resume once the reset window has elapsed",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    observed_at_ms = System.monotonic_time(:millisecond) - 2_000
+
+    state =
+      %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new(),
+        blocked: %{},
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+        codex_rate_limits: %{
+          primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 1},
+          secondary: %{remaining: 10, limit: 60, reset_in_seconds: 30},
+          credits: %{has_credits: true}
+        }
+      }
+      |> Map.put(:codex_rate_limits_observed_at_ms, observed_at_ms)
+
+    assert Orchestrator.should_dispatch_project_candidate_for_test(issue, "project-a", 5, state)
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
