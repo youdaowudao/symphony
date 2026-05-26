@@ -43,11 +43,12 @@ defmodule SymphonyElixir.Workspace do
   def cleanup_workspace(attrs) when is_map(attrs) do
     with {:ok, context} <- DispatchContext.new(attrs),
          true <- DispatchContext.cleanup_ready?(context) || {:error, :cleanup_context_missing, ""},
-         workspace_path when is_binary(workspace_path) <- context.workspace_path,
-         :ok <- validate_workspace_path(workspace_path, context.worker_host),
+         raw_workspace_path when is_binary(raw_workspace_path) <- context.workspace_path,
+         :ok <- validate_workspace_path(raw_workspace_path, context.worker_host),
          {:ok, context} <- canonicalize_cleanup_context(context),
          {:ok, owner} <- read_owner_for_cleanup(context),
          true <- OwnerFile.ownership_matches?(context, owner) || {:error, :owner_mismatch, ""},
+         workspace_path when is_binary(workspace_path) <- context.workspace_path,
          :ok <- maybe_run_before_remove_hook(workspace_path, context.issue_identifier, context.worker_host) do
       remove_workspace_path(workspace_path, context.worker_host)
     else
@@ -616,10 +617,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp canonicalize_workspace_path(workspace_path, worker_host)
        when is_binary(workspace_path) and is_binary(worker_host) do
-    with {:ok, canonical_workspace_path} <- canonicalize_remote_path(workspace_path, worker_host),
-         :ok <- validate_workspace_path(canonical_workspace_path, worker_host) do
-      {:ok, canonical_workspace_path}
-    end
+    canonicalize_remote_path(workspace_path, worker_host)
   end
 
   defp canonicalize_remote_path(workspace_path, worker_host)
@@ -628,11 +626,24 @@ defmodule SymphonyElixir.Workspace do
       [
         "set -eu",
         remote_shell_assign("workspace", workspace_path),
-        "mkdir -p \"$(dirname \"$workspace\")\"",
-        "if [ -e \"$workspace\" ] && [ ! -d \"$workspace\" ]; then rm -rf \"$workspace\"; fi",
-        "mkdir -p \"$workspace\"",
-        "cd \"$workspace\" >/dev/null 2>&1",
-        "pwd -P"
+        "workspace_dir=\"$(dirname \"$workspace\")\"",
+        "workspace_base=\"$(basename \"$workspace\")\"",
+        "mkdir -p \"$workspace_dir\"",
+        "cd \"$workspace_dir\" >/dev/null 2>&1",
+        "canonical_parent=\"$(pwd -P)\"",
+        "canonical_workspace=\"$canonical_parent/$workspace_base\"",
+        "if [ -d \"$workspace\" ]; then",
+        "  cd \"$workspace\" >/dev/null 2>&1",
+        "  pwd -P",
+        "elif [ -L \"$workspace\" ]; then",
+        "  if cd \"$workspace\" >/dev/null 2>&1; then",
+        "    pwd -P",
+        "  else",
+        "    printf '%s\\n' \"$canonical_workspace\"",
+        "  fi",
+        "else",
+        "  printf '%s\\n' \"$canonical_workspace\"",
+        "fi"
       ]
       |> Enum.join("\n")
 

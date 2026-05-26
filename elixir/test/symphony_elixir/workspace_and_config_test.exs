@@ -266,6 +266,82 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "remote dispatch workspace creates owner file on first prepare" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-dispatch-workspace-create-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      call_index_file = Path.join(test_root, "ssh.call-index")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/project-a/MT_CREATE__ssue6666"
+
+      File.mkdir_p!(test_root)
+      File.write!(call_index_file, "0\n")
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      call_index_file="#{call_index_file}"
+      call_index=$(cat "$call_index_file")
+      next_call_index=$((call_index + 1))
+      printf '%s\\n' "$next_call_index" > "$call_index_file"
+
+      case "$next_call_index" in
+        1|3)
+          printf '%s\\n' '#{workspace_path}'
+          ;;
+        2)
+          printf '%s\\n' '/remote/home/.symphony-remote-workspaces'
+          ;;
+        4)
+          printf '0'
+          ;;
+        5)
+          printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01:2200"]
+      )
+
+      context =
+        dispatch_workspace_context("project-a", "issue-6666", "MT-CREATE",
+          attempt: 1,
+          worker_host: "worker-01:2200"
+        )
+
+      assert {:ok, ^workspace_path} = Workspace.prepare_dispatch_workspace(context)
+
+      trace = File.read!(trace_file)
+      assert trace =~ "__SYMPHONY_OWNER__"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(
@@ -510,6 +586,46 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                issue_id: "issue-4444",
                issue_identifier: "MT-MISSING"
              })
+  end
+
+  test "dispatch cleanup removes the canonical workspace when runtime metadata uses a symlink path" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-cleanup-canonical-path-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      actual_workspace_root = Path.join(test_root, "actual-workspaces")
+      linked_workspace_root = Path.join(test_root, "linked-workspaces")
+
+      File.mkdir_p!(actual_workspace_root)
+      File.ln_s!(actual_workspace_root, linked_workspace_root)
+
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: linked_workspace_root)
+
+      create_context = dispatch_workspace_context("project-a", "issue-5555", "MT-LINKED-CLEANUP", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(create_context)
+
+      linked_workspace_path =
+        Path.join(
+          linked_workspace_root,
+          Path.relative_to(workspace, actual_workspace_root)
+        )
+
+      cleanup_context =
+        create_context
+        |> Map.put(:workspace_path, linked_workspace_path)
+        |> Map.put(:worker_host, nil)
+
+      assert {:ok, removed_paths} = Workspace.cleanup_workspace(cleanup_context)
+      assert workspace in removed_paths
+      refute File.exists?(workspace)
+      refute File.exists?(linked_workspace_path)
+    after
+      File.rm_rf(test_root)
+    end
   end
 
   test "linear issue helpers" do
