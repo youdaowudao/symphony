@@ -72,24 +72,12 @@ defmodule SymphonyElixir.Workspace do
          :ok <- ensure_project_workspace_root(project_root),
          {:ok, workspace_paths} <- startup_workspace_candidates(project_root) do
       workspace_paths
-      |> Enum.each(fn workspace_path ->
-        case maybe_cleanup_startup_workspace(workspace_path, valid_project_key, valid_issue_identifier) do
-          :ok ->
-            :ok
-
-          {:error, reason} ->
-            Logger.warning(
-              "Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key} workspace_path=#{workspace_path}: cleanup_failed: #{inspect(reason)}"
-            )
-        end
-      end)
+      |> Enum.each(&cleanup_startup_workspace_path(&1, valid_project_key, valid_issue_identifier, issue_identifier, project_key))
 
       :ok
     else
       {:error, reason} ->
-        Logger.warning(
-          "Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key}: cleanup_failed: #{inspect(reason)}"
-        )
+        Logger.warning("Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key}: cleanup_failed: #{inspect(reason)}")
 
         :ok
     end
@@ -249,7 +237,13 @@ defmodule SymphonyElixir.Workspace do
          context = DispatchContext.with_workspace_path(context, canonical_workspace_path),
          :ok <- validate_workspace_path(canonical_workspace_path, context.worker_host),
          {:ok, canonical_workspace_path, created?} <- ensure_dispatch_workspace(canonical_workspace_path, context),
-         :ok <- maybe_run_after_create_hook(canonical_workspace_path, issue_context(context), created?, context.worker_host) do
+         :ok <-
+           maybe_run_after_create_hook(
+             canonical_workspace_path,
+             issue_context(context),
+             created?,
+             context.worker_host
+           ) do
       {:ok, canonical_workspace_path}
     end
   end
@@ -294,6 +288,7 @@ defmodule SymphonyElixir.Workspace do
 
   defp write_remote_owner_file(%DispatchContext{} = context, created_at) do
     owner_path = OwnerFile.absolute_path(context.workspace_path)
+
     owner_payload =
       Jason.encode!(%{
         schema_version: 1,
@@ -568,29 +563,48 @@ defmodule SymphonyElixir.Workspace do
   defp parse_remote_workspace_output(output) do
     lines = String.split(IO.iodata_to_binary(output), "\n", trim: true)
 
-    marker_payload =
-      Enum.find_value(lines, fn line ->
-        case String.split(line, "\t", parts: 3) do
-          [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
-            {created == "1", path}
-
-          _ ->
-            nil
-        end
-      end)
+    marker_payload = find_remote_workspace_marker(lines)
 
     case marker_payload do
-      {created?, workspace} when is_boolean(created?) and is_binary(workspace) ->
+      {created?, workspace} ->
         {:ok, workspace, created?}
 
       nil ->
-        case lines do
-          [workspace] when is_binary(workspace) and workspace != "" ->
-            {:ok, workspace, true}
+        parse_remote_workspace_fallback(lines, output)
+    end
+  end
 
-          _ ->
-            {:error, {:workspace_prepare_failed, :invalid_output, output}}
-        end
+  defp find_remote_workspace_marker(lines) when is_list(lines) do
+    Enum.find_value(lines, fn line ->
+      case String.split(line, "\t", parts: 3) do
+        [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
+          {created == "1", path}
+
+        _ ->
+          nil
+      end
+    end)
+  end
+
+  defp parse_remote_workspace_fallback(lines, output) when is_list(lines) do
+    case lines do
+      [workspace] when is_binary(workspace) and workspace != "" ->
+        {:ok, workspace, true}
+
+      _ ->
+        {:error, {:workspace_prepare_failed, :invalid_output, output}}
+    end
+  end
+
+  defp cleanup_startup_workspace_path(workspace_path, valid_project_key, valid_issue_identifier, issue_identifier, project_key) do
+    case maybe_cleanup_startup_workspace(workspace_path, valid_project_key, valid_issue_identifier) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key} workspace_path=#{workspace_path}: cleanup_failed: #{inspect(reason)}"
+        )
     end
   end
 

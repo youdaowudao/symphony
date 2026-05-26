@@ -1,5 +1,7 @@
 defmodule SymphonyElixir.CoreTest do
   use SymphonyElixir.TestSupport
+  alias SymphonyElixir.ProjectContext
+  alias SymphonyElixir.Tracker.ProjectCandidate
 
   test "config defaults and validation checks" do
     write_workflow_file!(Workflow.workflow_file_path(),
@@ -609,14 +611,14 @@ defmodule SymphonyElixir.CoreTest do
 
     issue =
       %Issue{
-      id: issue_id,
-      identifier: "PROJECT-B-RUN",
-      state: "In Progress",
-      title: "Refresh only project B",
-      description: "Only one runtime identity should refresh",
-      labels: []
-    }
-    |> Map.put(:project_key, "project-b")
+        id: issue_id,
+        identifier: "PROJECT-B-RUN",
+        state: "In Progress",
+        title: "Refresh only project B",
+        description: "Only one runtime identity should refresh",
+        labels: []
+      }
+      |> Map.put(:project_key, "project-b")
 
     updated_state = Orchestrator.reconcile_issue_states_for_test([issue], state)
 
@@ -644,7 +646,7 @@ defmodule SymphonyElixir.CoreTest do
                  {:ok,
                   %{
                     candidates: [
-                      SymphonyElixir.Tracker.ProjectCandidate.new!(
+                      ProjectCandidate.new!(
                         %Issue{
                           id: issue_id,
                           identifier: "PROJECT-A-DISPATCH",
@@ -652,7 +654,7 @@ defmodule SymphonyElixir.CoreTest do
                           state: "Done",
                           blocked_by: []
                         },
-                        %SymphonyElixir.ProjectContext{
+                        %ProjectContext{
                           project_key: "project-a",
                           display_name: "Project A",
                           enabled: true,
@@ -809,6 +811,31 @@ defmodule SymphonyElixir.CoreTest do
            } = state.retry_attempts[runtime_key]
 
     refute Map.has_key?(state.retry_attempts, issue_id)
+  end
+
+  test "bare issue_id claims do not block project-aware dispatch for another project" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "shared-issue-id-bare-claim"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "PROJECT-B-BARE-CLAIM",
+      title: "dispatch candidate",
+      description: "should still dispatch when another project left a bare claim",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    assert Orchestrator.should_dispatch_project_candidate_for_test(issue, "project-b", 5, state)
   end
 
   test "different projects with the same issue id do not block dispatch for the other project" do
@@ -1053,6 +1080,59 @@ defmodule SymphonyElixir.CoreTest do
     }
 
     assert Orchestrator.select_worker_host_for_test(state, "worker-a") == "worker-a"
+  end
+
+  test "select_worker_host_for_test skips worker hosts paused by host failure backoff" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      worker_ssh_hosts: ["worker-a", "worker-b"],
+      worker_max_concurrent_agents_per_host: 2
+    )
+
+    state =
+      %Orchestrator.State{
+        running: %{},
+        claimed: MapSet.new(),
+        blocked: %{},
+        retry_attempts: %{},
+        codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+      }
+      |> Map.put(:worker_host_backoffs, %{
+        "worker-a" => %{
+          until_ms: System.monotonic_time(:millisecond) + 30_000,
+          attempt: 1,
+          reason: {:workspace_prepare_failed, "worker-a", 75, "prepare failed"}
+        }
+      })
+
+    assert Orchestrator.select_worker_host_for_test(state, nil) == "worker-b"
+  end
+
+  test "project-aware dispatch gate blocks new Codex starts when codex rate limits are exhausted" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue = %Issue{
+      id: "issue-rate-limit-gate",
+      identifier: "PROJECT-A-RATE-LIMIT",
+      title: "dispatch candidate",
+      description: "should not start a new Codex run when limits are exhausted",
+      state: "Todo",
+      blocked_by: []
+    }
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new(),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      codex_rate_limits: %{
+        primary: %{remaining: 0, limit: 20_000, reset_in_seconds: 90},
+        secondary: %{remaining: 0, limit: 60, reset_in_seconds: 45},
+        credits: %{has_credits: false}
+      }
+    }
+
+    refute Orchestrator.should_dispatch_project_candidate_for_test(issue, "project-a", 5, state)
   end
 
   defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
@@ -1362,6 +1442,7 @@ defmodule SymphonyElixir.CoreTest do
       }
 
       before = MapSet.new(File.ls!(workspace_root))
+
       assert :ok =
                AgentRunner.run(
                  issue,
@@ -1369,6 +1450,7 @@ defmodule SymphonyElixir.CoreTest do
                  project_key: "project-a",
                  issue_state_fetcher: fn [_issue_id] -> {:ok, [%{issue | state: "Done"}]} end
                )
+
       entries_after = MapSet.new(File.ls!(workspace_root))
 
       created =

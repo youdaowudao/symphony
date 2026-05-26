@@ -599,7 +599,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {:codex_worker_update, issue_id,
        %{
          event: :session_started,
-          session_id: "session-b-updated",
+         session_id: "session-b-updated",
          codex_app_server_pid: "4242",
          worker_host: "worker-b",
          timestamp: now
@@ -720,6 +720,94 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert state.running[project_a_key].issue.state == "Todo"
     assert state.running[project_b_key].issue.identifier == "PROJECT-B-RUN"
     assert state.running[project_b_key].issue.state == "In Progress"
+  end
+
+  test "legacy running reconcile does not terminate project-aware entries from another project with the same issue id" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "shared-running-issue-legacy"
+    project_b_key = {"project-b", issue_id}
+    now = DateTime.utc_now()
+
+    state = %Orchestrator.State{
+      running: %{
+        issue_id => %{
+          pid: nil,
+          ref: nil,
+          identifier: "LEGACY-RUN",
+          issue_identifier: "LEGACY-RUN",
+          issue_id: issue_id,
+          issue: %Issue{id: issue_id, identifier: "LEGACY-RUN", title: "legacy runtime issue", state: "Todo"},
+          started_at: now
+        },
+        project_b_key => %{
+          pid: nil,
+          ref: nil,
+          identifier: "PROJECT-B-RUN",
+          issue_identifier: "PROJECT-B-RUN",
+          issue_id: issue_id,
+          issue: %Issue{id: issue_id, identifier: "PROJECT-B-RUN", title: "project b runtime issue", state: "In Progress"},
+          project_key: "project-b",
+          started_at: now
+        }
+      },
+      claimed: MapSet.new([issue_id, project_b_key]),
+      blocked: %{},
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.reconcile_issue_states_for_test(
+        [%Issue{id: issue_id, identifier: "LEGACY-RUN", title: "legacy runtime issue", state: "Review"}],
+        state
+      )
+
+    refute Map.has_key?(updated_state.running, issue_id)
+    refute MapSet.member?(updated_state.claimed, issue_id)
+    assert Map.has_key?(updated_state.running, project_b_key)
+    assert MapSet.member?(updated_state.claimed, project_b_key)
+  end
+
+  test "legacy blocked terminal cleanup does not release project-aware entries from another project with the same issue id" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "shared-blocked-issue-legacy"
+    project_b_key = {"project-b", issue_id}
+
+    legacy_issue = %Issue{id: issue_id, identifier: "LEGACY-BLOCKED", title: "legacy blocked issue", state: "Done"}
+
+    state = %Orchestrator.State{
+      running: %{},
+      claimed: MapSet.new([issue_id, project_b_key]),
+      blocked: %{
+        issue_id => %{
+          identifier: "LEGACY-BLOCKED",
+          issue_identifier: "LEGACY-BLOCKED",
+          issue_id: issue_id,
+          issue: legacy_issue,
+          error: "legacy blocked"
+        },
+        project_b_key => %{
+          identifier: "PROJECT-B-BLOCKED",
+          issue_identifier: "PROJECT-B-BLOCKED",
+          issue_id: issue_id,
+          issue: %Issue{id: issue_id, identifier: "PROJECT-B-BLOCKED", title: "project b blocked issue", state: "Done"},
+          project_key: "project-b",
+          error: "project b blocked"
+        }
+      },
+      retry_attempts: %{},
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0}
+    }
+
+    updated_state =
+      Orchestrator.reconcile_blocked_issue_states_for_test([legacy_issue], state)
+
+    assert %{error: "cleanup_failed:" <> _} = updated_state.blocked[issue_id]
+    assert MapSet.member?(updated_state.claimed, issue_id)
+    assert Map.has_key?(updated_state.blocked, project_b_key)
+    assert MapSet.member?(updated_state.claimed, project_b_key)
   end
 
   test "orchestrator snapshot tracks codex thread totals and app-server pid" do
@@ -1087,6 +1175,91 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     snapshot = GenServer.call(pid, :snapshot)
     assert snapshot.rate_limits == rate_limits
+  end
+
+  test "orchestrator poll cycle keeps polling but blocks new dispatch when codex rate limits are exhausted" do
+    Application.put_env(:symphony_elixir, :linear_client_module, V012FixLinearClient)
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15}
+    ])
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_candidate_results, %{
+      "project-a" =>
+        {:ok,
+         [
+           %Issue{
+             id: "issue-project-a-rate-limit",
+             identifier: "PROJECT-A-RATE-LIMIT",
+             title: "rate limited candidate",
+             description: "should stay undispatched while Codex is rate limited",
+             state: "Todo",
+             blocked_by: []
+           }
+         ]}
+    })
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      poll_interval_ms: 50
+    )
+
+    orchestrator_name = Module.concat(__MODULE__, :RateLimitedDispatchOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    exhausted_rate_limits = %{
+      "limit_id" => "codex",
+      "primary" => %{"remaining" => 0, "limit" => 100, "reset_in_seconds" => 95},
+      "secondary" => %{"remaining" => 0, "limit" => 60, "reset_in_seconds" => 45},
+      "credits" => %{"has_credits" => false, "unlimited" => false}
+    }
+
+    :sys.replace_state(pid, fn state ->
+      %{
+        state
+        | poll_interval_ms: 50,
+          poll_check_in_progress: true,
+          next_poll_due_at_ms: nil,
+          codex_rate_limits: exhausted_rate_limits
+      }
+    end)
+
+    send(pid, :run_poll_cycle)
+
+    snapshot =
+      wait_for_snapshot(pid, fn
+        %{
+          polling: %{checking?: false, poll_interval_ms: 50, next_poll_in_ms: next_poll_in_ms},
+          rate_limits: ^exhausted_rate_limits
+        }
+        when is_integer(next_poll_in_ms) and next_poll_in_ms <= 50 ->
+          true
+
+        _ ->
+          false
+      end)
+
+    state = :sys.get_state(pid)
+
+    assert snapshot.rate_limits == exhausted_rate_limits
+    assert state.running == %{}
+    assert state.retry_attempts == %{}
+    assert MapSet.size(state.claimed) == 0
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:project_fetch_candidate_issues_called, "project-a", ["Todo", "In Progress"]}
   end
 
   test "orchestrator token accounting prefers total_token_usage over last_token_usage in token_count payloads" do
@@ -1538,11 +1711,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
         {:ok,
          [
            %Issue{
-              id: "issue-project-a",
-              identifier: "PROJECT-A-1",
-              title: "project a candidate",
-              state: "Todo"
-            }
+             id: "issue-project-a",
+             identifier: "PROJECT-A-1",
+             title: "project a candidate",
+             state: "Todo"
+           }
          ]},
       "project-b" =>
         {:ok,
@@ -1620,8 +1793,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive :project_registry_normalized_entries_called
     assert_receive {:project_fetch_candidate_issues_called, "project-a", ["Todo", "In Progress"]}
     assert_receive {:project_fetch_candidate_issues_called, "project-b", ["Todo", "In Progress"]}
-    assert_receive {:project_fetch_issues_by_states_called, "project-a",
-                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+
     assert %{project_key: "project-a", identifier: "PROJECT-A-1"} =
              state.retry_attempts[{"project-a", "issue-project-a"}]
 
@@ -1736,6 +1909,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     assert_receive :project_registry_normalized_entries_called
+
     assert_receive {:project_aggregation_called,
                     [
                       %{
@@ -1745,6 +1919,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
                         display_name: nil
                       }
                     ]}
+
     assert File.exists?(stale_workspace)
     refute_receive {:legacy_fetch_issues_by_states_called, _states}
   end
@@ -1930,8 +2105,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     assert_receive :project_registry_normalized_entries_called
-    assert_receive {:project_fetch_issues_by_states_called, "project-a",
-                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
     refute Map.has_key?(state.retry_attempts, runtime_key)
     refute MapSet.member?(state.claimed, runtime_key)
   end
@@ -2007,8 +2181,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end)
 
     assert_receive :project_registry_normalized_entries_called
-    assert_receive {:project_fetch_issues_by_states_called, "project-a",
-                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
     assert MapSet.member?(state.claimed, runtime_key)
     refute Map.has_key?(state.retry_attempts, runtime_key)
 
@@ -2115,6 +2288,115 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Map.has_key?(state.retry_attempts, issue_id)
     assert MapSet.member?(state.completed, issue_id)
     refute MapSet.member?(state.completed, runtime_key)
+  end
+
+  test "normal completion keeps retry entries for another project sharing the same issue id" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "issue-continuation-shared-retry"
+    project_a_key = {"project-a", issue_id}
+    project_b_key = {"project-b", issue_id}
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationSharedRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    ref = make_ref()
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "PROJECT-A-CONT-SHARED",
+      issue_identifier: "PROJECT-A-CONT-SHARED",
+      issue: %Issue{id: issue_id, identifier: "PROJECT-A-CONT-SHARED", title: "continuation", state: "In Progress"},
+      project_key: "project-a",
+      session_id: "thread-continuation-shared-retry",
+      started_at: DateTime.utc_now()
+    }
+
+    other_project_retry = %{
+      attempt: 2,
+      timer_ref: nil,
+      retry_token: make_ref(),
+      due_at_ms: System.monotonic_time(:millisecond) + 5_000,
+      identifier: "PROJECT-B-RETRY",
+      error: "project b retry",
+      project_key: "project-b",
+      issue_id: issue_id,
+      issue_identifier: "PROJECT-B-RETRY",
+      worker_host: "dm-dev3",
+      workspace_path: "/workspaces/project-b/PROJECT-B-RETRY__issue",
+      last_attempt: 2
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{project_a_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([project_a_key, project_b_key]))
+      |> Map.put(:retry_attempts, %{project_b_key => other_project_retry})
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{project_key: "project-a"} = state.retry_attempts[project_a_key]
+    assert %{project_key: "project-b", identifier: "PROJECT-B-RETRY"} = state.retry_attempts[project_b_key]
+  end
+
+  test "worker host startup failure pauses only the failing host while keeping other hosts selectable" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      worker_ssh_hosts: ["worker-a", "worker-b"],
+      worker_max_concurrent_agents_per_host: 1
+    )
+
+    issue_id = "issue-worker-host-failure"
+    runtime_key = {"project-a", issue_id}
+    ref = make_ref()
+    orchestrator_name = Module.concat(__MODULE__, :WorkerHostFailureOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "PROJECT-A-HOST-FAIL",
+      issue_identifier: "PROJECT-A-HOST-FAIL",
+      project_key: "project-a",
+      worker_host: "worker-a",
+      issue: %Issue{id: issue_id, identifier: "PROJECT-A-HOST-FAIL", state: "In Progress"},
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{runtime_key => running_entry})
+      |> Map.put(:claimed, MapSet.new([runtime_key]))
+    end)
+
+    send(
+      pid,
+      {:DOWN, ref, :process, self(), {:shutdown, {:workspace_prepare_failed, "worker-a", 75, "worker-a prepare failed"}}}
+    )
+
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    assert %{worker_host: "worker-a"} = state.retry_attempts[runtime_key]
+    assert Orchestrator.select_worker_host_for_test(state, nil) == "worker-b"
   end
 
   test "retry revalidation fails closed when retry metadata has no project_key" do
@@ -2279,10 +2561,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     assert_receive :project_registry_normalized_entries_called
-    assert_receive {:project_fetch_issues_by_states_called, "project-a",
-                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
-    assert_receive {:project_fetch_issues_by_states_called, "project-b",
-                    ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
+    assert_receive {:project_fetch_issues_by_states_called, "project-b", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
     assert MapSet.member?(state.claimed, runtime_key)
 
     assert %{
@@ -2354,11 +2634,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     state = :sys.get_state(pid)
 
     assert_receive :project_registry_normalized_entries_called
+
     assert_receive {:project_aggregation_called,
                     [
                       %{project_key: "project-a", enabled: true, max_concurrent_agents: 15, display_name: nil},
                       %{project_key: "project-b", enabled: true, max_concurrent_agents: 15, display_name: nil}
                     ]}
+
     assert MapSet.member?(state.claimed, runtime_key)
 
     assert %{
@@ -2550,17 +2832,24 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     state =
       wait_for_state(pid, fn current_state ->
-        updated = Orchestrator.reconcile_issue_states_for_test([
-          %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
-        ], current_state)
+        updated =
+          Orchestrator.reconcile_issue_states_for_test(
+            [
+              %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
+            ],
+            current_state
+          )
 
         match?(%{error: "cleanup_failed:" <> _}, updated.blocked[runtime_key])
       end)
 
     updated_state =
-      Orchestrator.reconcile_issue_states_for_test([
-        %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
-      ], state)
+      Orchestrator.reconcile_issue_states_for_test(
+        [
+          %Issue{id: issue_id, identifier: "MT-RUN-DONE", state: "Done"}
+        ],
+        state
+      )
 
     assert MapSet.member?(updated_state.claimed, runtime_key)
     refute Map.has_key?(updated_state.retry_attempts, runtime_key)

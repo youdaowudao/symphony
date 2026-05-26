@@ -4,6 +4,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
   alias SymphonyElixir.Config.Schema
   alias SymphonyElixir.Config.Schema.{Codex, StringOrMap}
   alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.Workspace.DispatchContext
+  alias SymphonyElixir.Workspace.OwnerFile
 
   test "workspace bootstrap can be implemented in after_create hook" do
     test_root =
@@ -151,9 +153,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
       Enum.each(invalid_project_keys, fn project_key ->
         assert {:error, reason} =
-                 Workspace.prepare_dispatch_workspace(
-                   dispatch_workspace_context(project_key, "issue-1", "MT-1")
-                 )
+                 Workspace.prepare_dispatch_workspace(dispatch_workspace_context(project_key, "issue-1", "MT-1"))
 
         assert reason in [:cleanup_context_missing, :invalid_project_key_path_segment]
       end)
@@ -818,7 +818,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       dispatch_workspace_context("project-a", "issue-owner-1", "MT-OWNER", attempt: 1)
       |> Map.put(:workspace_path, "/tmp/project-a/MT_OWNER")
 
-    assert {:ok, dispatch_context} = SymphonyElixir.Workspace.DispatchContext.new(context)
+    assert {:ok, dispatch_context} = DispatchContext.new(context)
 
     matching_owner = %{
       "project_key" => "project-a",
@@ -831,7 +831,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       "schema_version" => 1
     }
 
-    assert SymphonyElixir.Workspace.OwnerFile.ownership_matches?(dispatch_context, matching_owner)
+    assert OwnerFile.ownership_matches?(dispatch_context, matching_owner)
 
     mismatched_owners = [
       Map.put(matching_owner, "project_key", "project-b"),
@@ -841,7 +841,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     ]
 
     Enum.each(mismatched_owners, fn owner ->
-      refute SymphonyElixir.Workspace.OwnerFile.ownership_matches?(dispatch_context, owner)
+      refute OwnerFile.ownership_matches?(dispatch_context, owner)
     end)
   end
 

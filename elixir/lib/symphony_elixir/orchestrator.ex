@@ -40,7 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       blocked: %{},
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      worker_host_backoffs: %{}
     ]
   end
 
@@ -63,7 +64,8 @@ defmodule SymphonyElixir.Orchestrator do
       tick_timer_ref: nil,
       tick_token: nil,
       codex_totals: @empty_codex_totals,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      worker_host_backoffs: %{}
     }
 
     run_terminal_workspace_cleanup()
@@ -230,7 +232,8 @@ defmodule SymphonyElixir.Orchestrator do
         {:ok, runtime_key, attempt, metadata, state} ->
           handle_retry_issue(state, runtime_key, attempt, metadata)
 
-        :missing -> {:noreply, state}
+        :missing ->
+          {:noreply, state}
       end
 
     notify_dashboard()
@@ -254,7 +257,7 @@ defmodule SymphonyElixir.Orchestrator do
       Logger.info("Agent task completed for issue_id=#{issue_id} session_id=#{session_id}; scheduling active-state continuation check")
 
       state
-      |> complete_issue(issue_id)
+      |> complete_issue(runtime_key)
       |> schedule_issue_retry(runtime_key, 1, %{
         identifier: running_entry.identifier,
         delay_type: :continuation,
@@ -290,6 +293,7 @@ defmodule SymphonyElixir.Orchestrator do
     Logger.warning("Agent task exited for issue_id=#{issue_id} session_id=#{session_id} reason=#{inspect(reason)}; scheduling retry")
 
     next_attempt = next_retry_attempt_from_running(running_entry)
+    state = maybe_pause_worker_host_for_failure(state, running_entry, reason, next_attempt)
 
     schedule_issue_retry(state, runtime_key, next_attempt, %{
       identifier: running_entry.identifier,
@@ -311,7 +315,8 @@ defmodule SymphonyElixir.Orchestrator do
 
     with :ok <- Config.validate!(),
          {:ok, project_result} <- Tracker.fetch_project_candidates(),
-         true <- available_slots(state) > 0 do
+         true <- available_slots(state) > 0,
+         true <- codex_dispatch_allowed?(state) do
       choose_project_issues(project_result, state)
     else
       {:error, :missing_linear_api_token} ->
@@ -409,6 +414,16 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   @doc false
+  @spec reconcile_blocked_issue_states_for_test([Issue.t()], term()) :: term()
+  def reconcile_blocked_issue_states_for_test(issues, %State{} = state) when is_list(issues) do
+    reconcile_blocked_issue_states(issues, state, active_state_set(), terminal_state_set())
+  end
+
+  def reconcile_blocked_issue_states_for_test(issues, state) when is_list(issues) do
+    reconcile_blocked_issue_states(issues, state, active_state_set(), terminal_state_set())
+  end
+
+  @doc false
   @spec should_dispatch_issue_for_test(Issue.t(), term()) :: boolean()
   def should_dispatch_issue_for_test(%Issue{} = issue, %State{} = state) do
     should_dispatch_issue?(issue, state, active_state_set(), terminal_state_set())
@@ -487,7 +502,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
-    running_runtime_keys = matching_runtime_keys(state.running, issue.id, issue_project_key(issue))
+    running_runtime_keys = reconcile_runtime_keys(state.running, issue.id, issue_project_key(issue))
 
     Enum.reduce(running_runtime_keys, state, fn runtime_key, state_acc ->
       reconcile_runtime_issue_state(runtime_key, issue, state_acc, active_states, terminal_states)
@@ -508,7 +523,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp reconcile_blocked_issue_state(%Issue{} = issue, state, active_states, terminal_states) do
-    blocked_runtime_keys = matching_runtime_keys(state.blocked, issue.id, issue_project_key(issue))
+    blocked_runtime_keys = reconcile_runtime_keys(state.blocked, issue.id, issue_project_key(issue))
 
     Enum.reduce(blocked_runtime_keys, state, fn runtime_key, state_acc ->
       reconcile_blocked_runtime_issue_state(runtime_key, issue, state_acc, active_states, terminal_states)
@@ -772,9 +787,7 @@ defmodule SymphonyElixir.Orchestrator do
     issue_id = runtime_issue_id(runtime_key)
     project_key = runtime_project_key(runtime_key)
 
-    Logger.warning(
-      "Malformed runtime identity detected; stopping automatic progression issue_id=#{issue_id} project_key=#{inspect(project_key)} container=#{container}"
-    )
+    Logger.warning("Malformed runtime identity detected; stopping automatic progression issue_id=#{issue_id} project_key=#{inspect(project_key)} container=#{container}")
 
     release_issue_claim(state, runtime_key)
   end
@@ -838,20 +851,19 @@ defmodule SymphonyElixir.Orchestrator do
   defp terminate_running_issue(%State{} = state, runtime_identity, cleanup_workspace) do
     case Map.get(state.running, runtime_identity) do
       nil ->
-        matching_keys = matching_runtime_keys(state.running, runtime_issue_id(runtime_identity))
-
-        if matching_keys == [] do
-          release_issue_claim(state, runtime_identity)
-        else
-          Enum.reduce(matching_keys, state, fn runtime_key, state_acc ->
-            terminate_running_issue(state_acc, runtime_key, cleanup_workspace)
-          end)
-        end
+        release_issue_claim(state, runtime_identity)
 
       %{pid: pid, ref: ref} = running_entry ->
         state = record_session_completion_totals(state, running_entry)
         stop_running_task(pid, ref)
-        cleanup_result = if cleanup_workspace, do: cleanup_running_issue_workspace(state, runtime_identity, running_entry), else: :ok
+
+        cleanup_result =
+          if cleanup_workspace do
+            cleanup_running_issue_workspace(state, runtime_identity, running_entry)
+          else
+            :ok
+          end
+
         finalize_running_termination(state, runtime_identity, running_entry, cleanup_result)
 
       _ ->
@@ -860,7 +872,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp finalize_running_termination(state, runtime_identity, _running_entry, :ok) do
-    removal_keys = runtime_identity_keys_from_state(state, runtime_identity)
+    removal_keys = exact_runtime_identity_keys(runtime_identity)
 
     %{
       state
@@ -1078,23 +1090,24 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_block_issue_from_entry(%State{} = state, runtime_identity, runtime_key, running_entry, error) do
     issue_id = runtime_issue_id(runtime_key)
 
-    blocked_entry = %{
-      issue_id: issue_id,
-      identifier: Map.get(running_entry, :identifier, issue_id),
-      issue_identifier: Map.get(running_entry, :issue_identifier, Map.get(running_entry, :identifier, issue_id)),
-      issue: Map.get(running_entry, :issue),
-      project_key: Map.get(running_entry, :project_key),
-      worker_host: Map.get(running_entry, :worker_host),
-      workspace_path: Map.get(running_entry, :workspace_path),
-      attempt: Map.get(running_entry, :attempt, Map.get(running_entry, :retry_attempt)),
-      session_id: running_entry_session_id(running_entry),
-      error: error,
-      blocked_at: DateTime.utc_now(),
-      last_codex_message: Map.get(running_entry, :last_codex_message),
-      last_codex_event: Map.get(running_entry, :last_codex_event),
-      last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
-    }
-    |> ensure_runtime_entry_identity(runtime_key)
+    blocked_entry =
+      %{
+        issue_id: issue_id,
+        identifier: Map.get(running_entry, :identifier, issue_id),
+        issue_identifier: Map.get(running_entry, :issue_identifier, Map.get(running_entry, :identifier, issue_id)),
+        issue: Map.get(running_entry, :issue),
+        project_key: Map.get(running_entry, :project_key),
+        worker_host: Map.get(running_entry, :worker_host),
+        workspace_path: Map.get(running_entry, :workspace_path),
+        attempt: Map.get(running_entry, :attempt, Map.get(running_entry, :retry_attempt)),
+        session_id: running_entry_session_id(running_entry),
+        error: error,
+        blocked_at: DateTime.utc_now(),
+        last_codex_message: Map.get(running_entry, :last_codex_message),
+        last_codex_event: Map.get(running_entry, :last_codex_event),
+        last_codex_timestamp: Map.get(running_entry, :last_codex_timestamp)
+      }
+      |> ensure_runtime_entry_identity(runtime_key)
 
     removal_keys = runtime_identity_keys_from_state(state, runtime_identity)
 
@@ -1182,6 +1195,7 @@ defmodule SymphonyElixir.Orchestrator do
       !MapSet.member?(claimed, issue.id) and
       !Map.has_key?(running, issue.id) and
       !Map.has_key?(blocked, issue.id) and
+      codex_dispatch_allowed?(state) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
       worker_slots_available?(state)
@@ -1197,18 +1211,13 @@ defmodule SymphonyElixir.Orchestrator do
          active_states,
          terminal_states
        ) do
+    runtime_identity = runtime_key(project_key, issue.id)
+
     candidate_issue?(issue, active_states, terminal_states) and
       stable_project_key?(project_key) and
       valid_project_limit?(project_limit) and
-      !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
-      is_nil(resolve_runtime_key(claimed, issue.id, project_key)) and
-      is_nil(resolve_runtime_key(running, issue.id, project_key)) and
-      is_nil(resolve_runtime_key(blocked, issue.id, project_key)) and
-      is_nil(resolve_runtime_key(retry_attempts, issue.id, project_key)) and
-      available_slots(state) > 0 and
-      state_slots_available?(issue, running) and
-      project_slots_available?(project_key, project_limit, running) and
-      worker_slots_available?(state)
+      project_candidate_runtime_available?(runtime_identity, claimed, running, blocked, retry_attempts) and
+      dispatch_capacity_available?(state, issue, running, project_key, project_limit)
   end
 
   defp should_dispatch_project_candidate?(
@@ -1311,7 +1320,12 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp dispatch_issue(%State{} = state, issue, attempt, preferred_worker_host, project_key) do
-    case revalidate_project_issue_for_dispatch(issue, project_key, &fetch_project_issues_by_states/1, terminal_state_set()) do
+    case revalidate_project_issue_for_dispatch(
+           issue,
+           project_key,
+           &fetch_project_issues_by_states/1,
+           terminal_state_set()
+         ) do
       {:ok, %Issue{} = refreshed_issue} ->
         do_dispatch_issue(state, refreshed_issue, attempt, preferred_worker_host, project_key)
 
@@ -1434,28 +1448,13 @@ defmodule SymphonyElixir.Orchestrator do
        when is_binary(issue_id) and is_binary(project_key) and is_function(project_fetcher, 1) do
     case project_fetcher.(project_key) do
       {:ok, %{candidates: candidates, project_results: project_results}} ->
-        case project_result_status(project_results, project_key) do
-          :failed ->
-            {:error, :project_fetch_failed}
-
-          nil ->
-            {:error, :project_missing_from_aggregate_result}
-
-          _ ->
-            candidates
-            |> find_project_issue_by_key_and_id(project_key, issue_id)
-            |> case do
-              %Issue{} = refreshed_issue ->
-                if retry_candidate_issue?(refreshed_issue, terminal_states) do
-                  {:ok, refreshed_issue}
-                else
-                  {:skip, refreshed_issue}
-                end
-
-              nil ->
-                {:skip, :missing}
-            end
-        end
+        handle_project_dispatch_revalidation(
+          candidates,
+          project_results,
+          project_key,
+          issue_id,
+          terminal_states
+        )
 
       {:error, reason} ->
         {:error, reason}
@@ -1465,11 +1464,14 @@ defmodule SymphonyElixir.Orchestrator do
   defp revalidate_project_issue_for_dispatch(issue, _project_key, _project_fetcher, _terminal_states),
     do: {:ok, issue}
 
-  defp complete_issue(%State{} = state, issue_id) do
+  defp complete_issue(%State{} = state, runtime_identity) do
+    issue_id = runtime_issue_id(runtime_identity)
+    removal_keys = exact_runtime_identity_keys(runtime_identity)
+
     %{
       state
       | completed: MapSet.put(state.completed, issue_id),
-        retry_attempts: drop_runtime_keys(state.retry_attempts, matching_runtime_keys(state.retry_attempts, issue_id))
+        retry_attempts: drop_runtime_keys(state.retry_attempts, removal_keys)
     }
   end
 
@@ -1481,9 +1483,7 @@ defmodule SymphonyElixir.Orchestrator do
     if is_tuple(retry_runtime_key) and stable_project_key?(runtime_project_key(retry_runtime_key)) do
       do_schedule_issue_retry(state, retry_runtime_key, attempt, Map.put(metadata, :issue_id, issue_id))
     else
-      Logger.warning(
-        "Retry poll missing stable project identity for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}; stopping automatic retry"
-      )
+      Logger.warning("Retry poll missing stable project identity for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}; stopping automatic retry")
 
       state
     end
@@ -1492,25 +1492,20 @@ defmodule SymphonyElixir.Orchestrator do
   defp do_schedule_issue_retry(%State{} = state, runtime_key, attempt, metadata)
        when is_tuple(runtime_key) and is_map(metadata) do
     issue_id = runtime_issue_id(runtime_key)
-    previous_runtime_key = resolve_runtime_key(state.retry_attempts, issue_id, runtime_project_key(runtime_key)) || runtime_key
+    previous_runtime_key = previous_retry_runtime_key(state.retry_attempts, issue_id, runtime_key)
     previous_retry = Map.get(state.retry_attempts, previous_runtime_key, %{attempt: 0})
-    next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
+    next_attempt = normalize_retry_attempt(attempt, previous_retry)
     delay_ms = retry_delay(next_attempt, metadata)
-    old_timer = Map.get(previous_retry, :timer_ref)
     retry_token = make_ref()
     due_at_ms = System.monotonic_time(:millisecond) + delay_ms
     identifier = pick_retry_identifier(issue_id, previous_retry, metadata)
     error = pick_retry_error(previous_retry, metadata)
     worker_host = pick_retry_worker_host(previous_retry, metadata)
     workspace_path = pick_retry_workspace_path(previous_retry, metadata)
-
-    if is_reference(old_timer) do
-      Process.cancel_timer(old_timer)
-    end
+    cancel_retry_timer(Map.get(previous_retry, :timer_ref))
 
     timer_ref = Process.send_after(self(), {:retry_issue, runtime_key, retry_token}, delay_ms)
-
-    error_suffix = if is_binary(error), do: " error=#{error}", else: ""
+    error_suffix = retry_error_suffix(error)
 
     Logger.warning("Retrying issue_id=#{issue_id} issue_identifier=#{identifier} in #{delay_ms}ms (attempt #{next_attempt})#{error_suffix}")
 
@@ -1533,13 +1528,20 @@ defmodule SymphonyElixir.Orchestrator do
             workspace_path: workspace_path,
             last_attempt: metadata[:attempt] || next_attempt
           }),
-        claimed: ensure_runtime_identity_claimed(migrate_runtime_identity(state.claimed, previous_runtime_key, runtime_key), runtime_key)
+        claimed:
+          ensure_runtime_identity_claimed(
+            migrate_runtime_identity(state.claimed, previous_runtime_key, runtime_key),
+            runtime_key
+          )
     }
   end
 
   defp pop_retry_attempt_state(%State{} = state, runtime_identity, retry_token) when is_reference(retry_token) do
     issue_id = runtime_issue_id(runtime_identity)
-    retry_runtime_key = resolve_runtime_key(state.retry_attempts, issue_id, runtime_project_key(runtime_identity)) || runtime_identity
+
+    retry_runtime_key =
+      resolve_runtime_key(state.retry_attempts, issue_id, runtime_project_key(runtime_identity)) ||
+        runtime_identity
 
     case Map.get(state.retry_attempts, retry_runtime_key) do
       %{attempt: attempt, retry_token: ^retry_token} = retry_entry ->
@@ -1554,8 +1556,9 @@ defmodule SymphonyElixir.Orchestrator do
           attempt: Map.get(retry_entry, :last_attempt, attempt)
         }
 
-        {:ok, retry_runtime_key, attempt, metadata,
-         %{state | retry_attempts: drop_runtime_keys(state.retry_attempts, [retry_runtime_key])}}
+        updated_state = %{state | retry_attempts: drop_runtime_keys(state.retry_attempts, [retry_runtime_key])}
+
+        {:ok, retry_runtime_key, attempt, metadata, updated_state}
 
       _ ->
         :missing
@@ -1568,7 +1571,16 @@ defmodule SymphonyElixir.Orchestrator do
 
     case normalized_runtime_key do
       {project_key, ^issue_id} when is_binary(project_key) and project_key != "" ->
-        state = %{state | claimed: ensure_runtime_identity_claimed(migrate_runtime_identity(state.claimed, runtime_key, normalized_runtime_key), normalized_runtime_key)}
+        state =
+          %{
+            state
+            | claimed:
+                ensure_runtime_identity_claimed(
+                  migrate_runtime_identity(state.claimed, runtime_key, normalized_runtime_key),
+                  normalized_runtime_key
+                )
+          }
+
         handle_retry_issue_with_project(state, normalized_runtime_key, attempt, metadata, project_key)
 
       _ ->
@@ -1676,38 +1688,33 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_blocked_issue_workspace(state, runtime_key, %Issue{} = issue) do
-    blocked_runtime_keys =
-      matching_runtime_keys(state.blocked, runtime_issue_id(runtime_key), runtime_project_key(runtime_key))
+    if Map.has_key?(state.blocked, runtime_key) do
+      blocked_entry = Map.get(state.blocked, runtime_key, %{})
 
-    if blocked_runtime_keys == [] do
-      release_issue_claim(state, runtime_key)
+      cleanup_attrs = %{
+        project_key: Map.get(blocked_entry, :project_key),
+        issue_id: runtime_issue_id(runtime_key),
+        issue_identifier: Map.get(blocked_entry, :issue_identifier, issue.identifier),
+        worker_host: Map.get(blocked_entry, :worker_host),
+        workspace_path: Map.get(blocked_entry, :workspace_path),
+        attempt: Map.get(blocked_entry, :attempt)
+      }
+
+      case Workspace.cleanup_workspace(cleanup_attrs) do
+        {:ok, _} ->
+          release_issue_claim(state, runtime_key)
+
+        {:error, reason, _output} ->
+          updated_entry = Map.put(blocked_entry, :error, "cleanup_failed: #{inspect(reason)}")
+
+          %{
+            state
+            | blocked: Map.put(state.blocked, runtime_key, updated_entry),
+              claimed: ensure_runtime_identity_claimed(state.claimed, runtime_key)
+          }
+      end
     else
-      Enum.reduce(blocked_runtime_keys, state, fn runtime_key, state_acc ->
-        blocked_entry = Map.get(state_acc.blocked, runtime_key, %{})
-
-        cleanup_attrs = %{
-          project_key: Map.get(blocked_entry, :project_key),
-          issue_id: runtime_issue_id(runtime_key),
-          issue_identifier: Map.get(blocked_entry, :issue_identifier, issue.identifier),
-          worker_host: Map.get(blocked_entry, :worker_host),
-          workspace_path: Map.get(blocked_entry, :workspace_path),
-          attempt: Map.get(blocked_entry, :attempt)
-        }
-
-        case Workspace.cleanup_workspace(cleanup_attrs) do
-          {:ok, _} ->
-            release_issue_claim(state_acc, runtime_key)
-
-          {:error, reason, _output} ->
-            updated_entry = Map.put(blocked_entry, :error, "cleanup_failed: #{inspect(reason)}")
-
-            %{
-              state_acc
-              | blocked: Map.put(state_acc.blocked, runtime_key, updated_entry),
-                claimed: ensure_runtime_identity_claimed(state_acc.claimed, runtime_key)
-            }
-        end
-      end)
+      release_issue_claim(state, runtime_key)
     end
   end
 
@@ -1774,13 +1781,10 @@ defmodule SymphonyElixir.Orchestrator do
   defp handle_active_retry(state, runtime_key, issue, attempt, metadata) do
     case project_limit_from_registry(metadata[:project_key]) do
       {:ok, project_limit} ->
-        if retry_candidate_issue?(issue, terminal_state_set()) and
-             dispatch_slots_available?(issue, state) and
-             project_slots_available?(metadata[:project_key], project_limit, state.running) and
-             worker_slots_available?(state, metadata[:worker_host]) do
+        if active_retry_dispatch_ready?(state, issue, metadata, project_limit) do
           {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:project_key])}
         else
-          Logger.debug("No available slots for retrying #{issue_context(issue)}; retrying again")
+          Logger.debug("Retry remains queued for #{issue_context(issue)}; dispatch gate not open yet")
 
           {:noreply,
            schedule_issue_retry(
@@ -1789,7 +1793,7 @@ defmodule SymphonyElixir.Orchestrator do
              attempt + 1,
              Map.merge(metadata, %{
                identifier: issue.identifier,
-               error: "no available orchestrator slots",
+               error: active_retry_block_reason(state),
                project_key: metadata[:project_key]
              })
            )}
@@ -1839,9 +1843,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_retry_after_missing_project_result(state, runtime_key, attempt, metadata, project_key) do
     issue_id = runtime_issue_id(runtime_key)
-    Logger.warning(
-      "Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id} project_key=#{project_key}: target project missing from aggregate result"
-    )
+    Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id} project_key=#{project_key}: target project missing from aggregate result")
 
     {:noreply,
      schedule_issue_retry(
@@ -1853,7 +1855,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp release_issue_claim(%State{} = state, runtime_identity) do
-    removal_keys = runtime_identity_keys_from_state(state, runtime_identity)
+    removal_keys = exact_runtime_identity_keys(runtime_identity)
 
     %{
       state
@@ -1934,7 +1936,7 @@ defmodule SymphonyElixir.Orchestrator do
       is_binary(update_session_id) and is_binary(runtime_session_id) ->
         update_session_id == runtime_session_id
 
-      is_binary(update_worker_host) and is_binary(runtime_worker_host) and runtime_worker_host != "" ->
+      runtime_worker_match?(update_worker_host, runtime_worker_host) ->
         update_worker_host == runtime_worker_host
 
       is_binary(update_codex_pid) and is_binary(runtime_codex_pid) ->
@@ -1965,6 +1967,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp fetch_project_issues_by_states(project_key) when is_binary(project_key) do
     all_states = Config.settings!().tracker.active_states ++ Config.settings!().tracker.terminal_states
+
     Tracker.fetch_project_issues_by_states(all_states)
     |> case do
       {:ok, %{candidates: candidates, project_results: project_results}} ->
@@ -2029,6 +2032,16 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp matching_runtime_keys(_container, _issue_id, _project_key), do: []
 
+  defp reconcile_runtime_keys(container, issue_id, project_key) when is_binary(issue_id) do
+    if stable_project_key?(project_key) do
+      matching_runtime_keys(container, issue_id, project_key)
+    else
+      reconcile_legacy_runtime_keys(container, issue_id)
+    end
+  end
+
+  defp reconcile_runtime_keys(_container, _issue_id, _project_key), do: []
+
   defp resolve_runtime_key(container, issue_id, project_key)
 
   defp resolve_runtime_key(container, issue_id, project_key) when is_binary(issue_id) do
@@ -2044,10 +2057,7 @@ defmodule SymphonyElixir.Orchestrator do
           issue_id
 
         true ->
-          case matching_runtime_keys(container, issue_id, project_key) do
-            [runtime_identity] -> runtime_identity
-            _ -> nil
-          end
+          resolve_matching_runtime_key(container, issue_id, project_key)
       end
     end
   end
@@ -2076,6 +2086,8 @@ defmodule SymphonyElixir.Orchestrator do
     |> List.insert_at(0, runtime_identity)
     |> Enum.uniq()
   end
+
+  defp exact_runtime_identity_keys(runtime_identity), do: [runtime_identity]
 
   defp ensure_runtime_identity_claimed(%MapSet{} = claimed, runtime_identity) do
     claimed
@@ -2190,13 +2202,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp worker_host_slots_available?(%State{} = state, worker_host) when is_binary(worker_host) do
-    case Config.settings!().worker.max_concurrent_agents_per_host do
-      limit when is_integer(limit) and limit > 0 ->
-        running_worker_host_count(state.running, worker_host) < limit
+    not worker_host_backoff_active?(state, worker_host) and
+      case Config.settings!().worker.max_concurrent_agents_per_host do
+        limit when is_integer(limit) and limit > 0 ->
+          running_worker_host_count(state.running, worker_host) < limit
 
-      _ ->
-        true
-    end
+        _ ->
+          true
+      end
   end
 
   defp find_runtime_key_for_ref(running, ref) do
@@ -2445,8 +2458,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp pop_running_entry(state, runtime_identity) do
-    {Map.get(state.running, runtime_identity),
-     %{state | running: drop_runtime_keys(state.running, [runtime_identity])}}
+    {Map.get(state.running, runtime_identity), %{state | running: drop_runtime_keys(state.running, [runtime_identity])}}
   end
 
   defp record_session_completion_totals(state, running_entry) when is_map(running_entry) do
@@ -2702,6 +2714,247 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp rate_limits_map?(_payload), do: false
+
+  defp codex_dispatch_allowed?(%State{} = state) do
+    not codex_rate_limit_active?(Map.get(state, :codex_rate_limits))
+  end
+
+  defp codex_dispatch_allowed?(_state), do: true
+
+  defp codex_rate_limit_active?(rate_limits) when is_map(rate_limits) do
+    primary = Map.get(rate_limits, :primary) || Map.get(rate_limits, "primary")
+    secondary = Map.get(rate_limits, :secondary) || Map.get(rate_limits, "secondary")
+
+    rate_limit_bucket_exhausted?(primary) or rate_limit_bucket_exhausted?(secondary)
+  end
+
+  defp codex_rate_limit_active?(_rate_limits), do: false
+
+  defp rate_limit_bucket_exhausted?(bucket) when is_map(bucket) do
+    bucket
+    |> Map.get(:remaining, Map.get(bucket, "remaining"))
+    |> parse_integer_like()
+    |> case do
+      remaining when is_integer(remaining) -> remaining <= 0
+      _ -> false
+    end
+  end
+
+  defp rate_limit_bucket_exhausted?(_bucket), do: false
+
+  defp parse_integer_like(value) when is_integer(value), do: value
+
+  defp parse_integer_like(value) when is_binary(value) do
+    case Integer.parse(String.trim(value)) do
+      {parsed, ""} -> parsed
+      _ -> nil
+    end
+  end
+
+  defp parse_integer_like(_value), do: nil
+
+  defp maybe_pause_worker_host_for_failure(%State{} = state, running_entry, reason, attempt)
+       when is_map(running_entry) do
+    worker_host = Map.get(running_entry, :worker_host)
+
+    if worker_host_failure?(worker_host, running_entry, reason) do
+      put_worker_host_backoff(state, worker_host, reason, attempt)
+    else
+      state
+    end
+  end
+
+  defp maybe_pause_worker_host_for_failure(state, _running_entry, _reason, _attempt), do: state
+
+  defp put_worker_host_backoff(%State{} = state, worker_host, reason, attempt) when is_binary(worker_host) do
+    next_attempt =
+      case attempt do
+        value when is_integer(value) and value > 0 -> value
+        _ -> 1
+      end
+
+    %{
+      state
+      | worker_host_backoffs:
+          Map.put(state.worker_host_backoffs, worker_host, %{
+            until_ms: System.monotonic_time(:millisecond) + failure_retry_delay(next_attempt),
+            attempt: next_attempt,
+            reason: reason
+          })
+    }
+  end
+
+  defp worker_host_backoff_active?(%State{} = state, worker_host) when is_binary(worker_host) do
+    case Map.get(state.worker_host_backoffs, worker_host) do
+      %{until_ms: until_ms} when is_integer(until_ms) ->
+        until_ms > System.monotonic_time(:millisecond)
+
+      _ ->
+        false
+    end
+  end
+
+  defp worker_host_backoff_active?(_state, _worker_host), do: false
+
+  defp worker_host_failure?(worker_host, running_entry, reason) when is_binary(worker_host) do
+    startup_failed? =
+      Map.get(running_entry, :last_codex_event) == :startup_failed or
+        Map.get(running_entry, :session_id) == nil
+
+    case reason do
+      {:shutdown, nested_reason} ->
+        worker_host_failure?(worker_host, running_entry, nested_reason)
+
+      other ->
+        worker_host_failure_reason?(other, worker_host, startup_failed?)
+    end
+  end
+
+  defp worker_host_failure?(_worker_host, _running_entry, _reason), do: false
+
+  defp worker_host_failure_reason?(
+         {:workspace_prepare_failed, worker_host, _status, _output},
+         worker_host,
+         _startup_failed?
+       ),
+       do: true
+
+  defp worker_host_failure_reason?(
+         {:invalid_workspace_cwd, _kind, worker_host, _workspace},
+         worker_host,
+         _startup_failed?
+       ),
+       do: true
+
+  defp worker_host_failure_reason?({:port_exit, _status}, _worker_host, startup_failed?),
+    do: startup_failed?
+
+  defp worker_host_failure_reason?(%RuntimeError{message: message}, worker_host, startup_failed?),
+    do: worker_host_failure_message?(message, worker_host, startup_failed?)
+
+  defp worker_host_failure_reason?({exception, _stacktrace}, worker_host, startup_failed?)
+       when is_struct(exception, RuntimeError),
+       do: worker_host_failure_message?(exception.message, worker_host, startup_failed?)
+
+  defp worker_host_failure_reason?(other, worker_host, startup_failed?) when is_tuple(other),
+    do: worker_host_failure_message?(inspect(other), worker_host, startup_failed?)
+
+  defp worker_host_failure_reason?(_reason, _worker_host, _startup_failed?), do: false
+
+  defp runtime_worker_match?(update_worker_host, runtime_worker_host)
+       when is_binary(update_worker_host) and is_binary(runtime_worker_host) do
+    runtime_worker_host != ""
+  end
+
+  defp runtime_worker_match?(_update_worker_host, _runtime_worker_host), do: false
+
+  defp project_candidate_runtime_available?(runtime_identity, claimed, running, blocked, retry_attempts) do
+    not container_member?(claimed, runtime_identity) and
+      not container_member?(running, runtime_identity) and
+      not container_member?(blocked, runtime_identity) and
+      not container_member?(retry_attempts, runtime_identity)
+  end
+
+  defp dispatch_capacity_available?(state, issue, running, project_key, project_limit) do
+    not todo_issue_blocked_by_non_terminal?(issue, terminal_state_set()) and
+      codex_dispatch_allowed?(state) and
+      available_slots(state) > 0 and
+      state_slots_available?(issue, running) and
+      project_slots_available?(project_key, project_limit, running) and
+      worker_slots_available?(state)
+  end
+
+  defp handle_project_dispatch_revalidation(
+         candidates,
+         project_results,
+         project_key,
+         issue_id,
+         terminal_states
+       ) do
+    case project_result_status(project_results, project_key) do
+      :failed ->
+        {:error, :project_fetch_failed}
+
+      nil ->
+        {:error, :project_missing_from_aggregate_result}
+
+      _ ->
+        project_revalidation_result(candidates, project_key, issue_id, terminal_states)
+    end
+  end
+
+  defp project_revalidation_result(candidates, project_key, issue_id, terminal_states) do
+    case find_project_issue_by_key_and_id(candidates, project_key, issue_id) do
+      %Issue{} = refreshed_issue ->
+        if retry_candidate_issue?(refreshed_issue, terminal_states) do
+          {:ok, refreshed_issue}
+        else
+          {:skip, refreshed_issue}
+        end
+
+      _ ->
+        {:skip, :missing}
+    end
+  end
+
+  defp active_retry_dispatch_ready?(state, issue, metadata, project_limit) do
+    codex_dispatch_allowed?(state) and
+      retry_candidate_issue?(issue, terminal_state_set()) and
+      dispatch_slots_available?(issue, state) and
+      project_slots_available?(metadata[:project_key], project_limit, state.running) and
+      worker_slots_available?(state, metadata[:worker_host])
+  end
+
+  defp active_retry_block_reason(state) do
+    if codex_dispatch_allowed?(state) do
+      "no available orchestrator slots"
+    else
+      "codex rate limit active"
+    end
+  end
+
+  defp reconcile_legacy_runtime_keys(container, issue_id) do
+    if container_member?(container, issue_id) do
+      [issue_id]
+    else
+      case matching_runtime_keys(container, issue_id, nil) do
+        [runtime_identity] -> [runtime_identity]
+        _ -> []
+      end
+    end
+  end
+
+  defp resolve_matching_runtime_key(container, issue_id, project_key) do
+    case matching_runtime_keys(container, issue_id, project_key) do
+      [runtime_identity] -> runtime_identity
+      _ -> nil
+    end
+  end
+
+  defp previous_retry_runtime_key(retry_attempts, issue_id, runtime_key) do
+    resolve_runtime_key(retry_attempts, issue_id, runtime_project_key(runtime_key)) || runtime_key
+  end
+
+  defp normalize_retry_attempt(attempt, _previous_retry) when is_integer(attempt), do: attempt
+  defp normalize_retry_attempt(_attempt, previous_retry), do: previous_retry.attempt + 1
+
+  defp cancel_retry_timer(timer_ref) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref)
+  end
+
+  defp cancel_retry_timer(_timer_ref), do: :ok
+
+  defp retry_error_suffix(error) when is_binary(error), do: " error=#{error}"
+  defp retry_error_suffix(_error), do: ""
+
+  defp worker_host_failure_message?(message, worker_host, startup_failed?)
+       when is_binary(message) and is_binary(worker_host) do
+    (String.contains?(message, "workspace_prepare_failed") and String.contains?(message, worker_host)) or
+      (String.contains?(message, "invalid_workspace_cwd") and String.contains?(message, worker_host)) or
+      (startup_failed? and String.contains?(message, "port_exit"))
+  end
+
+  defp worker_host_failure_message?(_message, _worker_host, _startup_failed?), do: false
 
   defp explicit_map_at_paths(payload, paths) when is_map(payload) and is_list(paths) do
     Enum.find_value(paths, fn path ->
