@@ -92,6 +92,180 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "dispatch workspace path is project scoped and writes owner file" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-owner-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-1234567890", "MT/Det", attempt: 2)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+      assert workspace =~ "/project-a/"
+      assert Path.basename(workspace) =~ "MT_Det__"
+
+      owner_path = Path.join(workspace, ".symphony/workspace-owner.json")
+      assert File.exists?(owner_path)
+
+      owner = Jason.decode!(File.read!(owner_path))
+
+      assert owner["schema_version"] == 1
+      assert owner["project_key"] == "project-a"
+      assert owner["issue_id"] == "issue-1234567890"
+      assert owner["issue_identifier"] == "MT/Det"
+      assert owner["workspace_path"] == workspace
+      assert owner["attempt"] == 2
+      assert owner["worker_host"] == nil
+      assert is_binary(owner["created_at"])
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "dispatch workspace rejects invalid project key path segments" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-invalid-project-key-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      assert {:error, :invalid_project_key_path_segment} =
+               Workspace.prepare_dispatch_workspace(
+                 dispatch_workspace_context("../project-a", "issue-1", "MT-1")
+               )
+
+      assert {:error, :invalid_project_key_path_segment} =
+               Workspace.prepare_dispatch_workspace(
+                 dispatch_workspace_context("project/a", "issue-1", "MT-1")
+               )
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "dispatch workspace reuse ignores attempt changes but fails closed when owner file is missing" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-reuse-owner-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      first_context = dispatch_workspace_context("project-a", "issue-2222", "MT-REUSE", attempt: 1)
+      second_context = dispatch_workspace_context("project-a", "issue-2222", "MT-REUSE", attempt: 5)
+
+      assert {:ok, first_workspace} = Workspace.prepare_dispatch_workspace(first_context)
+      assert {:ok, second_workspace} = Workspace.prepare_dispatch_workspace(second_context)
+      assert second_workspace == first_workspace
+
+      File.rm!(Path.join(first_workspace, ".symphony/workspace-owner.json"))
+
+      assert {:error, :owner_missing} =
+               Workspace.prepare_dispatch_workspace(second_context)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "remote dispatch workspace reuses existing owner file on the worker host" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-remote-dispatch-workspace-reuse-#{System.unique_integer([:positive])}"
+      )
+
+    previous_path = System.get_env("PATH")
+    previous_trace = System.get_env("SYMP_TEST_SSH_TRACE")
+
+    on_exit(fn ->
+      restore_env("PATH", previous_path)
+      restore_env("SYMP_TEST_SSH_TRACE", previous_trace)
+    end)
+
+    try do
+      trace_file = Path.join(test_root, "ssh.trace")
+      fake_ssh = Path.join(test_root, "ssh")
+      call_index_file = Path.join(test_root, "ssh.call-index")
+      workspace_root = "~/.symphony-remote-workspaces"
+      workspace_path = "/remote/home/.symphony-remote-workspaces/project-a/MT_REUSE__ssue2222"
+
+      owner_payload =
+        Jason.encode!(%{
+          schema_version: 1,
+          project_key: "project-a",
+          issue_id: "issue-2222",
+          issue_identifier: "MT-REUSE",
+          worker_host: "worker-01:2200",
+          workspace_path: workspace_path,
+          attempt: 1,
+          created_at: "2026-05-26T00:00:00Z"
+        })
+
+      File.mkdir_p!(test_root)
+      File.write!(call_index_file, "0\n")
+      System.put_env("SYMP_TEST_SSH_TRACE", trace_file)
+      System.put_env("PATH", test_root <> ":" <> (previous_path || ""))
+
+      File.write!(fake_ssh, """
+      #!/bin/sh
+      trace_file="${SYMP_TEST_SSH_TRACE:-/tmp/symphony-fake-ssh.trace}"
+      printf 'ARGV:%s\\n' "$*" >> "$trace_file"
+      call_index_file="#{call_index_file}"
+      call_index=$(cat "$call_index_file")
+      next_call_index=$((call_index + 1))
+      printf '%s\\n' "$next_call_index" > "$call_index_file"
+
+      case "$next_call_index" in
+        1|3|5)
+          printf '%s\\n' '#{workspace_path}'
+          ;;
+        2|4)
+          printf '%s\\n' '/remote/home/.symphony-remote-workspaces'
+          ;;
+        6)
+          printf '1'
+          ;;
+        7)
+          cat <<'__OWNER__'
+      #{owner_payload}
+      __OWNER__
+          ;;
+      esac
+
+      exit 0
+      """)
+
+      File.chmod!(fake_ssh, 0o755)
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        worker_ssh_hosts: ["worker-01:2200"]
+      )
+
+      context =
+        dispatch_workspace_context("project-a", "issue-2222", "MT-REUSE",
+          attempt: 5,
+          worker_host: "worker-01:2200"
+        )
+
+      assert {:ok, ^workspace_path} = Workspace.prepare_dispatch_workspace(context)
+
+      trace = File.read!(trace_file)
+      assert trace =~ workspace_path
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace replaces stale non-directory paths" do
     workspace_root =
       Path.join(
@@ -293,6 +467,49 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "workspace cleanup ignores non-binary identifier" do
     assert :ok = Workspace.remove_issue_workspaces(nil)
+  end
+
+  test "dispatch cleanup fails closed on owner mismatch before before_remove hook" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-cleanup-owner-mismatch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      workspace_root = Path.join(test_root, "workspaces")
+      before_remove_marker = Path.join(test_root, "before_remove.log")
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_before_remove: "echo before_remove > \"#{before_remove_marker}\""
+      )
+
+      create_context = dispatch_workspace_context("project-a", "issue-3333", "MT-CLEANUP", attempt: 1)
+      cleanup_context = dispatch_workspace_context("project-b", "issue-3333", "MT-CLEANUP", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(create_context)
+
+      cleanup_context =
+        cleanup_context
+        |> Map.put(:workspace_path, workspace)
+        |> Map.put(:worker_host, nil)
+
+      assert {:error, :owner_mismatch, ""} = Workspace.cleanup_workspace(cleanup_context)
+      assert File.dir?(workspace)
+      refute File.exists?(before_remove_marker)
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "dispatch cleanup rejects missing runtime metadata" do
+    assert {:error, :cleanup_context_missing, ""} =
+             Workspace.cleanup_workspace(%{
+               project_key: "project-a",
+               issue_id: "issue-4444",
+               issue_identifier: "MT-MISSING"
+             })
   end
 
   test "linear issue helpers" do
@@ -1264,6 +1481,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       printf 'ARGV:%s\\n' "$*" >> "$trace_file"
 
       case "$*" in
+        *"workspace_root="*"pwd -P"*)
+          printf '%s\\n' '/remote/home/.symphony-remote-workspaces'
+          ;;
+        *"workspace="*"pwd -P"*)
+          printf '%s\\n' '#{workspace_path}'
+          ;;
         *"__SYMPHONY_WORKSPACE__"*)
           printf '%s\\t%s\\t%s\\n' '__SYMPHONY_WORKSPACE__' '1' '#{workspace_path}'
           ;;
@@ -1302,5 +1525,15 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  defp dispatch_workspace_context(project_key, issue_id, issue_identifier, opts \\ []) do
+    %{
+      project_key: project_key,
+      issue_id: issue_id,
+      issue_identifier: issue_identifier,
+      attempt: Keyword.get(opts, :attempt, 1),
+      worker_host: Keyword.get(opts, :worker_host)
+    }
   end
 end

@@ -29,9 +29,17 @@ defmodule SymphonyElixir.AgentRunner do
   defp run_on_worker_host(issue, codex_update_recipient, opts, worker_host) do
     Logger.info("Starting worker attempt for #{issue_context(issue)} worker_host=#{worker_host_for_log(worker_host)}")
 
-    case Workspace.create_for_issue(issue, worker_host) do
+    dispatch_context = %{
+      project_key: Keyword.get(opts, :project_key),
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      worker_host: worker_host,
+      attempt: dispatch_attempt(opts)
+    }
+
+    case Workspace.prepare_dispatch_workspace(dispatch_context) do
       {:ok, workspace} ->
-        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace)
+        send_worker_runtime_info(codex_update_recipient, issue, worker_host, workspace, opts)
 
         try do
           with :ok <- Workspace.run_before_run_hook(workspace, issue, worker_host) do
@@ -60,21 +68,25 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp send_codex_update(_recipient, _issue, _message), do: :ok
 
-  defp send_worker_runtime_info(recipient, %Issue{id: issue_id}, worker_host, workspace)
+  defp send_worker_runtime_info(recipient, %Issue{id: issue_id, identifier: issue_identifier}, worker_host, workspace, opts)
        when is_binary(issue_id) and is_pid(recipient) and is_binary(workspace) do
     send(
       recipient,
       {:worker_runtime_info, issue_id,
        %{
+         project_key: Keyword.get(opts, :project_key),
+         issue_id: issue_id,
+         issue_identifier: issue_identifier,
          worker_host: worker_host,
-         workspace_path: workspace
+         workspace_path: workspace,
+         attempt: dispatch_attempt(opts)
        }}
     )
 
     :ok
   end
 
-  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace), do: :ok
+  defp send_worker_runtime_info(_recipient, _issue, _worker_host, _workspace, _opts), do: :ok
 
   defp run_codex_turns(workspace, issue, codex_update_recipient, opts, worker_host) do
     max_turns = Keyword.get(opts, :max_turns, Config.settings!().agent.max_turns)
@@ -190,6 +202,13 @@ defmodule SymphonyElixir.AgentRunner do
 
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
+
+  defp dispatch_attempt(opts) when is_list(opts) do
+    case Keyword.get(opts, :attempt) do
+      attempt when is_integer(attempt) and attempt > 0 -> attempt
+      _ -> 1
+    end
+  end
 
   defp normalize_issue_state(state_name) when is_binary(state_name) do
     state_name

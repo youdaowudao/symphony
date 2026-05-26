@@ -5,6 +5,7 @@ defmodule SymphonyElixir.Workspace do
 
   require Logger
   alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.Workspace.{DispatchContext, OwnerFile}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
 
@@ -28,6 +29,36 @@ defmodule SymphonyElixir.Workspace do
       error in [ArgumentError, ErlangError, File.Error] ->
         Logger.error("Workspace creation failed #{issue_log_context(issue_context)} worker_host=#{worker_host_for_log(worker_host)} error=#{Exception.message(error)}")
         {:error, error}
+    end
+  end
+
+  @spec prepare_dispatch_workspace(map()) :: {:ok, Path.t()} | {:error, term()}
+  def prepare_dispatch_workspace(attrs) when is_map(attrs) do
+    with {:ok, context} <- DispatchContext.new(attrs) do
+      do_prepare_dispatch_workspace(context)
+    end
+  end
+
+  @spec cleanup_workspace(map()) :: {:ok, [String.t()]} | {:error, term(), String.t()}
+  def cleanup_workspace(attrs) when is_map(attrs) do
+    with {:ok, context} <- DispatchContext.new(attrs),
+         true <- DispatchContext.cleanup_ready?(context) || {:error, :cleanup_context_missing, ""},
+         workspace_path when is_binary(workspace_path) <- context.workspace_path,
+         :ok <- validate_workspace_path(workspace_path, context.worker_host),
+         {:ok, context} <- canonicalize_cleanup_context(context),
+         {:ok, owner} <- read_owner_for_cleanup(context),
+         true <- OwnerFile.ownership_matches?(context, owner) || {:error, :owner_mismatch, ""},
+         :ok <- maybe_run_before_remove_hook(workspace_path, context.issue_identifier, context.worker_host) do
+      remove_workspace_path(workspace_path, context.worker_host)
+    else
+      {:error, reason, output} ->
+        {:error, reason, output}
+
+      {:error, reason} ->
+        {:error, reason, ""}
+
+      false ->
+        {:error, :cleanup_context_missing, ""}
     end
   end
 
@@ -93,7 +124,7 @@ defmodule SymphonyElixir.Workspace do
       true ->
         case validate_workspace_path(workspace, nil) do
           :ok ->
-            maybe_run_before_remove_hook(workspace, nil)
+            maybe_run_before_remove_hook(workspace, nil, nil)
             File.rm_rf(workspace)
 
           {:error, reason} ->
@@ -106,25 +137,8 @@ defmodule SymphonyElixir.Workspace do
   end
 
   def remove(workspace, worker_host) when is_binary(worker_host) do
-    maybe_run_before_remove_hook(workspace, worker_host)
-
-    script =
-      [
-        remote_shell_assign("workspace", workspace),
-        "rm -rf \"$workspace\""
-      ]
-      |> Enum.join("\n")
-
-    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
-      {:ok, {_output, 0}} ->
-        {:ok, []}
-
-      {:ok, {output, status}} ->
-        {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
-
-      {:error, reason} ->
-        {:error, reason, ""}
-    end
+    maybe_run_before_remove_hook(workspace, nil, worker_host)
+    remove_workspace_path(workspace, worker_host)
   end
 
   @spec remove_issue_workspaces(term()) :: :ok
@@ -193,6 +207,88 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  defp do_prepare_dispatch_workspace(%DispatchContext{} = context) do
+    workspace_path = dispatch_workspace_path(context)
+
+    with {:ok, canonical_workspace_path} <- canonicalize_workspace_path(workspace_path, context.worker_host),
+         context = DispatchContext.with_workspace_path(context, canonical_workspace_path),
+         :ok <- validate_workspace_path(canonical_workspace_path, context.worker_host),
+         {:ok, canonical_workspace_path, created?} <- ensure_dispatch_workspace(canonical_workspace_path, context),
+         :ok <- maybe_run_after_create_hook(canonical_workspace_path, issue_context(context), created?, context.worker_host) do
+      {:ok, canonical_workspace_path}
+    end
+  end
+
+  defp ensure_dispatch_workspace(workspace_path, %DispatchContext{} = context) do
+    case workspace_exists?(workspace_path, context.worker_host) do
+      true ->
+        with {:ok, owner} <- read_owner_for_workspace(context),
+             true <- OwnerFile.ownership_matches?(context, owner) || {:error, :owner_mismatch} do
+          {:ok, workspace_path, false}
+        else
+          {:error, {:owner_unreadable, _reason}} -> {:error, :owner_unreadable}
+          {:error, reason} -> {:error, reason}
+        end
+
+      false ->
+        with {:ok, workspace_path, true} <- ensure_workspace(workspace_path, context.worker_host),
+             :ok <- write_owner_file(context) do
+          {:ok, workspace_path, true}
+        end
+    end
+  end
+
+  defp read_owner_for_workspace(%DispatchContext{worker_host: nil, workspace_path: workspace_path}) do
+    OwnerFile.read(workspace_path)
+  end
+
+  defp read_owner_for_workspace(%DispatchContext{} = context) do
+    read_owner_for_cleanup(context)
+  end
+
+  defp write_owner_file(%DispatchContext{} = context) do
+    created_at = DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+
+    if is_nil(context.worker_host) do
+      OwnerFile.write!(context, created_at)
+      :ok
+    else
+      write_remote_owner_file(context, created_at)
+    end
+  end
+
+  defp write_remote_owner_file(%DispatchContext{} = context, created_at) do
+    owner_path = OwnerFile.absolute_path(context.workspace_path)
+    owner_payload =
+      Jason.encode!(%{
+        schema_version: 1,
+        project_key: context.project_key,
+        issue_id: context.issue_id,
+        issue_identifier: context.issue_identifier,
+        worker_host: context.worker_host,
+        workspace_path: context.workspace_path,
+        attempt: context.attempt,
+        created_at: created_at
+      })
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("owner_path", owner_path),
+        "mkdir -p \"$(dirname \"$owner_path\")\"",
+        "cat <<'__SYMPHONY_OWNER__' > \"$owner_path\"",
+        owner_payload,
+        "__SYMPHONY_OWNER__"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(context.worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} -> :ok
+      {:ok, {output, status}} -> {:error, {:workspace_prepare_failed, context.worker_host, status, output}}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   defp workspace_path_for_issue(safe_id, nil) when is_binary(safe_id) do
     Config.settings!().workspace.root
     |> Path.join(safe_id)
@@ -225,7 +321,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_run_before_remove_hook(workspace, nil) do
+  defp maybe_run_before_remove_hook(workspace, issue_identifier, nil) do
     hooks = Config.settings!().hooks
 
     case File.dir?(workspace) do
@@ -238,7 +334,7 @@ defmodule SymphonyElixir.Workspace do
             run_hook(
               command,
               workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
+              %{issue_id: nil, issue_identifier: issue_identifier || Path.basename(workspace)},
               "before_remove",
               nil
             )
@@ -250,7 +346,7 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
-  defp maybe_run_before_remove_hook(workspace, worker_host) when is_binary(worker_host) do
+  defp maybe_run_before_remove_hook(workspace, issue_identifier, worker_host) when is_binary(worker_host) do
     hooks = Config.settings!().hooks
 
     case hooks.before_remove do
@@ -274,7 +370,7 @@ defmodule SymphonyElixir.Workspace do
             handle_hook_command_result(
               {output, status},
               workspace,
-              %{issue_id: nil, issue_identifier: Path.basename(workspace)},
+              %{issue_id: nil, issue_identifier: issue_identifier || Path.basename(workspace)},
               "before_remove"
             )
 
@@ -385,6 +481,31 @@ defmodule SymphonyElixir.Workspace do
 
   defp validate_workspace_path(workspace, worker_host)
        when is_binary(workspace) and is_binary(worker_host) do
+    with :ok <- validate_remote_workspace_path_string(workspace),
+         {:ok, canonical_workspace_root} <- canonicalize_remote_root(worker_host),
+         {:ok, canonical_workspace} <- canonicalize_remote_path(workspace, worker_host) do
+      canonical_root_prefix = canonical_workspace_root <> "/"
+
+      cond do
+        canonical_workspace == canonical_workspace_root ->
+          {:error, {:workspace_equals_root, canonical_workspace, canonical_workspace_root}}
+
+        String.starts_with?(canonical_workspace <> "/", canonical_root_prefix) ->
+          :ok
+
+        true ->
+          {:error, {:workspace_outside_root, canonical_workspace, canonical_workspace_root}}
+      end
+    else
+      {:error, {:workspace_path_unreadable, _path, _reason} = reason} ->
+        {:error, reason}
+
+      {:error, reason} ->
+        {:error, {:workspace_path_unreadable, workspace, reason}}
+    end
+  end
+
+  defp validate_remote_workspace_path_string(workspace) when is_binary(workspace) do
     cond do
       String.trim(workspace) == "" ->
         {:error, {:workspace_path_unreadable, workspace, :empty}}
@@ -412,7 +533,7 @@ defmodule SymphonyElixir.Workspace do
   defp parse_remote_workspace_output(output) do
     lines = String.split(IO.iodata_to_binary(output), "\n", trim: true)
 
-    payload =
+    marker_payload =
       Enum.find_value(lines, fn line ->
         case String.split(line, "\t", parts: 3) do
           [@remote_workspace_marker, created, path] when created in ["0", "1"] and path != "" ->
@@ -423,12 +544,18 @@ defmodule SymphonyElixir.Workspace do
         end
       end)
 
-    case payload do
+    case marker_payload do
       {created?, workspace} when is_boolean(created?) and is_binary(workspace) ->
         {:ok, workspace, created?}
 
-      _ ->
-        {:error, {:workspace_prepare_failed, :invalid_output, output}}
+      nil ->
+        case lines do
+          [workspace] when is_binary(workspace) and workspace != "" ->
+            {:ok, workspace, true}
+
+          _ ->
+            {:error, {:workspace_prepare_failed, :invalid_output, output}}
+        end
     end
   end
 
@@ -453,6 +580,163 @@ defmodule SymphonyElixir.Workspace do
     "'" <> String.replace(value, "'", "'\"'\"'") <> "'"
   end
 
+  defp remove_workspace_path(workspace, nil) do
+    File.rm_rf(workspace)
+  end
+
+  defp remove_workspace_path(workspace, worker_host) when is_binary(worker_host) do
+    script =
+      [
+        remote_shell_assign("workspace", workspace),
+        "rm -rf \"$workspace\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {_output, 0}} ->
+        {:ok, []}
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_remove_failed, worker_host, status, output}, ""}
+
+      {:error, reason} ->
+        {:error, reason, ""}
+    end
+  end
+
+  defp dispatch_workspace_path(%DispatchContext{} = context) do
+    Config.settings!().workspace.root
+    |> Path.join(context.project_key)
+    |> Path.join(DispatchContext.path_segment(context))
+  end
+
+  defp canonicalize_workspace_path(workspace_path, nil) when is_binary(workspace_path) do
+    PathSafety.canonicalize(workspace_path)
+  end
+
+  defp canonicalize_workspace_path(workspace_path, worker_host)
+       when is_binary(workspace_path) and is_binary(worker_host) do
+    with {:ok, canonical_workspace_path} <- canonicalize_remote_path(workspace_path, worker_host),
+         :ok <- validate_workspace_path(canonical_workspace_path, worker_host) do
+      {:ok, canonical_workspace_path}
+    end
+  end
+
+  defp canonicalize_remote_path(workspace_path, worker_host)
+       when is_binary(workspace_path) and is_binary(worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace", workspace_path),
+        "mkdir -p \"$(dirname \"$workspace\")\"",
+        "if [ -e \"$workspace\" ] && [ ! -d \"$workspace\" ]; then rm -rf \"$workspace\"; fi",
+        "mkdir -p \"$workspace\"",
+        "cd \"$workspace\" >/dev/null 2>&1",
+        "pwd -P"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        output
+        |> IO.iodata_to_binary()
+        |> String.split("\n", trim: true)
+        |> List.last()
+        |> case do
+          nil -> {:error, {:workspace_prepare_failed, :invalid_output, output}}
+          expanded -> {:ok, expanded}
+        end
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_prepare_failed, worker_host, status, output}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp canonicalize_remote_root(worker_host) when is_binary(worker_host) do
+    root = Config.settings!().workspace.root
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace_root", root),
+        "mkdir -p \"$workspace_root\"",
+        "cd \"$workspace_root\" >/dev/null 2>&1",
+        "pwd -P"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        output
+        |> IO.iodata_to_binary()
+        |> String.split("\n", trim: true)
+        |> List.last()
+        |> case do
+          nil -> {:error, :invalid_output}
+          expanded -> {:ok, expanded}
+        end
+
+      {:ok, {output, status}} ->
+        {:error, {:workspace_prepare_failed, worker_host, status, output}}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp workspace_exists?(workspace_path, nil), do: File.dir?(workspace_path)
+
+  defp workspace_exists?(workspace_path, worker_host) when is_binary(worker_host) do
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("workspace", workspace_path),
+        "if [ -d \"$workspace\" ]; then printf '1'; else printf '0'; fi"
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} -> String.trim(IO.iodata_to_binary(output)) == "1"
+      _ -> false
+    end
+  end
+
+  defp canonicalize_cleanup_context(%DispatchContext{workspace_path: workspace_path, worker_host: worker_host} = context) do
+    with {:ok, canonical_workspace_path} <- canonicalize_workspace_path(workspace_path, worker_host) do
+      {:ok, DispatchContext.with_workspace_path(context, canonical_workspace_path)}
+    end
+  end
+
+  defp read_owner_for_cleanup(%DispatchContext{worker_host: nil, workspace_path: workspace_path}) do
+    OwnerFile.read(workspace_path)
+  end
+
+  defp read_owner_for_cleanup(%DispatchContext{} = context) do
+    owner_path = OwnerFile.absolute_path(context.workspace_path)
+
+    script =
+      [
+        "set -eu",
+        remote_shell_assign("owner_path", owner_path),
+        "cat \"$owner_path\""
+      ]
+      |> Enum.join("\n")
+
+    case run_remote_command(context.worker_host, script, Config.settings!().hooks.timeout_ms) do
+      {:ok, {output, 0}} ->
+        OwnerFile.decode(IO.iodata_to_binary(output))
+
+      {:ok, {_output, _status}} ->
+        {:error, :owner_missing}
+
+      {:error, reason} ->
+        {:error, {:owner_unreadable, reason}}
+    end
+  end
+
   defp worker_host_for_log(nil), do: "local"
   defp worker_host_for_log(worker_host), do: worker_host
 
@@ -467,6 +751,13 @@ defmodule SymphonyElixir.Workspace do
     %{
       issue_id: nil,
       issue_identifier: identifier
+    }
+  end
+
+  defp issue_context(%DispatchContext{} = context) do
+    %{
+      issue_id: context.issue_id,
+      issue_identifier: context.issue_identifier
     }
   end
 
