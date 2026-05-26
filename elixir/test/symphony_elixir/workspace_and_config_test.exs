@@ -176,6 +176,83 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "dispatch workspace reuse fails closed when owner file JSON is invalid" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-invalid-owner-json-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-7777", "MT-INVALID-OWNER", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+
+      File.write!(Path.join(workspace, ".symphony/workspace-owner.json"), "{not-json")
+
+      assert {:error, :owner_invalid_json} =
+               Workspace.prepare_dispatch_workspace(context)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "dispatch workspace reuse fails closed when owner schema version mismatches" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-owner-schema-mismatch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-8888", "MT-OWNER-SCHEMA", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+
+      owner_path = Path.join(workspace, ".symphony/workspace-owner.json")
+      owner = Jason.decode!(File.read!(owner_path))
+
+      owner
+      |> Map.put("schema_version", 2)
+      |> Jason.encode!()
+      |> then(&File.write!(owner_path, &1))
+
+      assert {:error, :owner_schema_mismatch} =
+               Workspace.prepare_dispatch_workspace(context)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "dispatch workspace reuse fails closed when owner file cannot be read" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-dispatch-workspace-owner-unreadable-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-9999", "MT-OWNER-UNREADABLE", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+
+      owner_path = Path.join(workspace, ".symphony/workspace-owner.json")
+      File.rm!(owner_path)
+      File.mkdir_p!(owner_path)
+
+      assert {:error, :owner_unreadable} =
+               Workspace.prepare_dispatch_workspace(context)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
   test "remote dispatch workspace reuses existing owner file on the worker host" do
     test_root =
       Path.join(
