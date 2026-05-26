@@ -136,15 +136,27 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     try do
       write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
 
-      assert {:error, :invalid_project_key_path_segment} =
-               Workspace.prepare_dispatch_workspace(
-                 dispatch_workspace_context("../project-a", "issue-1", "MT-1")
-               )
+      invalid_project_keys = [
+        "",
+        " ",
+        ".",
+        "..",
+        "../project-a",
+        "project/a",
+        "project\\a",
+        "project\na",
+        "project\ra",
+        "project" <> <<0>> <> "a"
+      ]
 
-      assert {:error, :invalid_project_key_path_segment} =
-               Workspace.prepare_dispatch_workspace(
-                 dispatch_workspace_context("project/a", "issue-1", "MT-1")
-               )
+      Enum.each(invalid_project_keys, fn project_key ->
+        assert {:error, reason} =
+                 Workspace.prepare_dispatch_workspace(
+                   dispatch_workspace_context(project_key, "issue-1", "MT-1")
+                 )
+
+        assert reason in [:cleanup_context_missing, :invalid_project_key_path_segment]
+      end)
     after
       File.rm_rf(workspace_root)
     end
@@ -703,6 +715,134 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     after
       File.rm_rf(test_root)
     end
+  end
+
+  test "startup terminal cleanup removes owned dispatch workspace for matching project and identifier" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-owned-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-startup-1", "MT-STARTUP", attempt: 3)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+      assert File.dir?(workspace)
+
+      assert :ok = Workspace.cleanup_startup_terminal_issue_workspace("project-a", "MT-STARTUP")
+      refute File.exists?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "startup terminal cleanup fails closed when owner file is missing" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-owner-missing-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-startup-2", "MT-STARTUP-MISSING", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+      File.rm!(Path.join(workspace, ".symphony/workspace-owner.json"))
+
+      assert :ok = Workspace.cleanup_startup_terminal_issue_workspace("project-a", "MT-STARTUP-MISSING")
+      assert File.dir?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "startup terminal cleanup fails closed when owner file is invalid" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-owner-invalid-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-startup-3", "MT-STARTUP-INVALID", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+      File.write!(Path.join(workspace, ".symphony/workspace-owner.json"), "{bad-json")
+
+      assert :ok = Workspace.cleanup_startup_terminal_issue_workspace("project-a", "MT-STARTUP-INVALID")
+      assert File.dir?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "startup terminal cleanup fails closed when owner identity does not match" do
+    workspace_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-startup-cleanup-owner-mismatch-#{System.unique_integer([:positive])}"
+      )
+
+    try do
+      write_workflow_file!(Workflow.workflow_file_path(), workspace_root: workspace_root)
+
+      context = dispatch_workspace_context("project-a", "issue-startup-4", "MT-STARTUP-MISMATCH", attempt: 1)
+
+      assert {:ok, workspace} = Workspace.prepare_dispatch_workspace(context)
+
+      owner_path = Path.join(workspace, ".symphony/workspace-owner.json")
+
+      owner_path
+      |> File.read!()
+      |> Jason.decode!()
+      |> Map.put("issue_identifier", "OTHER-ISSUE")
+      |> Jason.encode!()
+      |> then(&File.write!(owner_path, &1))
+
+      assert :ok = Workspace.cleanup_startup_terminal_issue_workspace("project-a", "MT-STARTUP-MISMATCH")
+      assert File.dir?(workspace)
+    after
+      File.rm_rf(workspace_root)
+    end
+  end
+
+  test "owner matching ignores issue_identifier and attempt but rejects key ownership differences" do
+    context =
+      dispatch_workspace_context("project-a", "issue-owner-1", "MT-OWNER", attempt: 1)
+      |> Map.put(:workspace_path, "/tmp/project-a/MT_OWNER")
+
+    assert {:ok, dispatch_context} = SymphonyElixir.Workspace.DispatchContext.new(context)
+
+    matching_owner = %{
+      "project_key" => "project-a",
+      "issue_id" => "issue-owner-1",
+      "issue_identifier" => "DIFFERENT-IDENTIFIER",
+      "worker_host" => nil,
+      "workspace_path" => "/tmp/project-a/MT_OWNER",
+      "attempt" => 99,
+      "created_at" => "2026-05-26T00:00:00Z",
+      "schema_version" => 1
+    }
+
+    assert SymphonyElixir.Workspace.OwnerFile.ownership_matches?(dispatch_context, matching_owner)
+
+    mismatched_owners = [
+      Map.put(matching_owner, "project_key", "project-b"),
+      Map.put(matching_owner, "issue_id", "issue-owner-2"),
+      Map.put(matching_owner, "worker_host", "worker-01:2200"),
+      Map.put(matching_owner, "workspace_path", "/tmp/project-a/OTHER")
+    ]
+
+    Enum.each(mismatched_owners, fn owner ->
+      refute SymphonyElixir.Workspace.OwnerFile.ownership_matches?(dispatch_context, owner)
+    end)
   end
 
   test "linear issue helpers" do

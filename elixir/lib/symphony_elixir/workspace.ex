@@ -63,6 +63,40 @@ defmodule SymphonyElixir.Workspace do
     end
   end
 
+  @spec cleanup_startup_terminal_issue_workspace(String.t(), String.t()) :: :ok
+  def cleanup_startup_terminal_issue_workspace(project_key, issue_identifier)
+      when is_binary(project_key) and is_binary(issue_identifier) do
+    with {:ok, valid_project_key} <- DispatchContext.validate_project_key(project_key),
+         {:ok, valid_issue_identifier} <- validate_startup_issue_identifier(issue_identifier),
+         project_root <- Path.join(Config.settings!().workspace.root, valid_project_key),
+         :ok <- ensure_project_workspace_root(project_root),
+         {:ok, workspace_paths} <- startup_workspace_candidates(project_root) do
+      workspace_paths
+      |> Enum.each(fn workspace_path ->
+        case maybe_cleanup_startup_workspace(workspace_path, valid_project_key, valid_issue_identifier) do
+          :ok ->
+            :ok
+
+          {:error, reason} ->
+            Logger.warning(
+              "Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key} workspace_path=#{workspace_path}: cleanup_failed: #{inspect(reason)}"
+            )
+        end
+      end)
+
+      :ok
+    else
+      {:error, reason} ->
+        Logger.warning(
+          "Skipping startup terminal workspace cleanup for issue_identifier=#{issue_identifier} project_key=#{project_key}: cleanup_failed: #{inspect(reason)}"
+        )
+
+        :ok
+    end
+  end
+
+  def cleanup_startup_terminal_issue_workspace(_project_key, _issue_identifier), do: :ok
+
   defp ensure_workspace(workspace, nil) do
     cond do
       File.dir?(workspace) ->
@@ -745,6 +779,61 @@ defmodule SymphonyElixir.Workspace do
 
       {:error, reason} ->
         {:error, {:owner_unreadable, reason}}
+    end
+  end
+
+  defp ensure_project_workspace_root(project_root) when is_binary(project_root) do
+    case File.dir?(project_root) do
+      true -> validate_workspace_path(project_root, nil)
+      false -> :ok
+    end
+  end
+
+  defp startup_workspace_candidates(project_root) when is_binary(project_root) do
+    case File.ls(project_root) do
+      {:ok, entries} -> {:ok, Enum.map(entries, &Path.join(project_root, &1))}
+      {:error, :enoent} -> {:ok, []}
+      {:error, reason} -> {:error, {:workspace_path_unreadable, project_root, reason}}
+    end
+  end
+
+  defp maybe_cleanup_startup_workspace(workspace_path, project_key, issue_identifier) do
+    with true <- File.dir?(workspace_path) || {:error, :workspace_missing},
+         :ok <- validate_workspace_path(workspace_path, nil),
+         {:ok, canonical_workspace_path} <- canonicalize_workspace_path(workspace_path, nil),
+         {:ok, owner} <- OwnerFile.read(canonical_workspace_path),
+         true <-
+           startup_owner_matches?(owner, project_key, issue_identifier, canonical_workspace_path) ||
+             {:error, :owner_mismatch},
+         :ok <- maybe_run_before_remove_hook(canonical_workspace_path, issue_identifier, nil),
+         {:ok, _removed_paths} <- remove_workspace_path(canonical_workspace_path, nil) do
+      :ok
+    else
+      false ->
+        {:error, :workspace_missing}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp startup_owner_matches?(owner, project_key, issue_identifier, workspace_path)
+       when is_map(owner) and is_binary(project_key) and is_binary(issue_identifier) and is_binary(workspace_path) do
+    owner["project_key"] == project_key and
+      owner["issue_identifier"] == issue_identifier and
+      owner["worker_host"] == nil and
+      owner["workspace_path"] == workspace_path
+  end
+
+  defp startup_owner_matches?(_owner, _project_key, _issue_identifier, _workspace_path), do: false
+
+  defp validate_startup_issue_identifier(issue_identifier) do
+    trimmed = String.trim(issue_identifier)
+
+    if trimmed == "" do
+      {:error, :cleanup_context_missing}
+    else
+      {:ok, trimmed}
     end
   end
 

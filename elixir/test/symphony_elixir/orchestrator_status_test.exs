@@ -1782,6 +1782,50 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute MapSet.member?(state.claimed, issue_id)
   end
 
+  test "normal completion does not enqueue retry when running entry has no stable project_key" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "issue-continuation-missing-project-key"
+    orchestrator_name = Module.concat(__MODULE__, :ContinuationMissingProjectKeyOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    ref = make_ref()
+
+    running_entry = %{
+      pid: self(),
+      ref: ref,
+      identifier: "PROJECT-MISSING-CONT",
+      issue: %Issue{
+        id: issue_id,
+        identifier: "PROJECT-MISSING-CONT",
+        title: "continuation without project key",
+        state: "In Progress"
+      },
+      session_id: "thread-missing-project-key",
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    send(pid, {:DOWN, ref, :process, self(), :normal})
+    Process.sleep(50)
+    state = :sys.get_state(pid)
+
+    refute Map.has_key?(state.retry_attempts, issue_id)
+    refute MapSet.member?(state.claimed, issue_id)
+  end
+
   test "retry revalidation reschedules when target project fetch fails but another project succeeds" do
     Application.put_env(:symphony_elixir, :linear_client_module, V012FixLinearClient)
     Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())

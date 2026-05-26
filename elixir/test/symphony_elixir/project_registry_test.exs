@@ -52,8 +52,7 @@ defmodule SymphonyElixir.ProjectRegistryTest do
       {%{schema_version: 1, projects: [%{project_key: 123, enabled: true}]}, "projects[0].project_key"},
       {%{schema_version: 1, projects: [123]}, "projects[0] must be a map"},
       {%{schema_version: 1, projects: [%{project_key: "project-a"}]}, "projects[0].enabled"},
-      {%{schema_version: 1, projects: [%{project_key: "project-a", enabled: "true"}]},
-       "projects[0].enabled"},
+      {%{schema_version: 1, projects: [%{project_key: "project-a", enabled: "true"}]}, "projects[0].enabled"},
       {%{
          schema_version: 1,
          projects: [%{project_key: "project-a", enabled: true, max_concurrent_agents: "15"}]

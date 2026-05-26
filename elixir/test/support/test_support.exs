@@ -50,6 +50,8 @@ defmodule SymphonyElixir.TestSupport do
         on_exit(fn ->
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
+          Application.delete_env(:symphony_elixir, :project_registry_module)
+          Application.delete_env(:symphony_elixir, :project_aggregation_module)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
           File.rm_rf(workflow_root)
@@ -360,3 +362,6 @@ defmodule SymphonyElixir.TestSupport do
     "  #{name}: |\n#{indented}"
   end
 end
+
+Code.require_file("fake_project_registry.ex", __DIR__)
+Code.require_file("fake_project_aggregation.ex", __DIR__)

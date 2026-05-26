@@ -55,6 +55,15 @@ defmodule SymphonyElixir.Workspace.DispatchContext do
     %{context | workspace_path: workspace_path}
   end
 
+  @doc false
+  @spec validate_project_key(term()) :: {:ok, String.t()} | {:error, term()}
+  def validate_project_key(project_key) do
+    with {:ok, project_key} <- validate_present_string(project_key, :project_key),
+         :ok <- validate_safe_path_segment(project_key) do
+      {:ok, project_key}
+    end
+  end
+
   @spec cleanup_ready?(t()) :: boolean()
   def cleanup_ready?(%__MODULE__{
         project_key: project_key,
@@ -86,13 +95,6 @@ defmodule SymphonyElixir.Workspace.DispatchContext do
     |> case do
       "" -> "issue"
       normalized -> String.slice(normalized, -8, 8) || normalized
-    end
-  end
-
-  defp validate_project_key(project_key) do
-    with {:ok, project_key} <- validate_present_string(project_key, :project_key),
-         :ok <- validate_safe_path_segment(project_key) do
-      {:ok, project_key}
     end
   end
 

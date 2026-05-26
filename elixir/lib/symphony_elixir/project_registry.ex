@@ -44,10 +44,12 @@ defmodule SymphonyElixir.ProjectRegistry do
   def load(path) when is_binary(path) do
     case File.read(path) do
       {:ok, content} ->
-        with {:ok, decoded} <- decode_yaml(content),
-             {:ok, registry} <- validate_registry(decoded) do
-          {:ok, registry}
-        end
+        content
+        |> decode_yaml()
+        |> then(fn
+          {:ok, decoded} -> validate_registry(decoded)
+          {:error, reason} -> {:error, reason}
+        end)
 
       {:error, :enoent} ->
         :missing
@@ -72,8 +74,12 @@ defmodule SymphonyElixir.ProjectRegistry do
   @spec normalized_entries(Path.t()) :: {:ok, [normalized_entry()]} | {:error, term()}
   def normalized_entries(path) when is_binary(path) do
     case load_normalized(path, nil) do
-      {:ok, {:registry, entries}} -> {:ok, entries}
-      :missing -> {:error, {:missing_project_registry, path}}
+      {:ok, {:registry, entries}} ->
+        {:ok, entries}
+
+      :missing ->
+        {:error, {:missing_project_registry, path}}
+
       {:error, reason} ->
         {:error, reason}
     end
@@ -238,15 +244,13 @@ defmodule SymphonyElixir.ProjectRegistry do
   defp validate_max_concurrent_agents(project, location) do
     case Map.fetch(project, "max_concurrent_agents") do
       {:ok, nil} ->
-        {:error,
-         {:invalid_project_registry, "#{location}.max_concurrent_agents must be a positive integer"}}
+        {:error, {:invalid_project_registry, "#{location}.max_concurrent_agents must be a positive integer"}}
 
       {:ok, value} when is_integer(value) and value > 0 ->
         {:ok, value}
 
       {:ok, _value} ->
-        {:error,
-         {:invalid_project_registry, "#{location}.max_concurrent_agents must be a positive integer"}}
+        {:error, {:invalid_project_registry, "#{location}.max_concurrent_agents must be a positive integer"}}
 
       :error ->
         {:ok, nil}

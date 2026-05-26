@@ -5,11 +5,21 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Linear.Issue
+  alias SymphonyElixir.{Linear.Issue, ProjectRegistry}
+  alias SymphonyElixir.Tracker.ProjectAggregation
 
   @spec fetch_candidate_issues() :: {:ok, [Issue.t()]} | {:error, term()}
   def fetch_candidate_issues do
     {:ok, issue_entries()}
+  end
+
+  @spec fetch_project_candidates() :: {:ok, term()} | {:error, term()}
+  def fetch_project_candidates do
+    with {:ok, project_entries} <- project_registry_module().normalized_entries() do
+      ProjectAggregation.aggregate(project_entries, fn _project_key ->
+        {:ok, issue_entries()}
+      end)
+    end
   end
 
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -23,6 +33,23 @@ defmodule SymphonyElixir.Tracker.Memory do
      Enum.filter(issue_entries(), fn %Issue{state: state} ->
        MapSet.member?(normalized_states, normalize_state(state))
      end)}
+  end
+
+  @spec fetch_project_issues_by_states([String.t()]) :: {:ok, term()} | {:error, term()}
+  def fetch_project_issues_by_states(state_names) do
+    normalized_states =
+      state_names
+      |> Enum.map(&normalize_state/1)
+      |> MapSet.new()
+
+    with {:ok, project_entries} <- project_registry_module().normalized_entries() do
+      ProjectAggregation.aggregate(project_entries, fn _project_key ->
+        {:ok,
+         Enum.filter(issue_entries(), fn %Issue{state: state} ->
+           MapSet.member?(normalized_states, normalize_state(state))
+         end)}
+      end)
+    end
   end
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [Issue.t()]} | {:error, term()}
@@ -49,6 +76,10 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   defp configured_issues do
     Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+  end
+
+  defp project_registry_module do
+    Application.get_env(:symphony_elixir, :project_registry_module, ProjectRegistry)
   end
 
   defp issue_entries do

@@ -1069,6 +1069,19 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
        when is_binary(issue_id) and is_map(metadata) do
+    if stable_project_key?(metadata[:project_key]) do
+      do_schedule_issue_retry(state, issue_id, attempt, metadata)
+    else
+      Logger.warning(
+        "Retry poll missing stable project identity for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}; releasing claim"
+      )
+
+      release_issue_claim(state, issue_id)
+    end
+  end
+
+  defp do_schedule_issue_retry(%State{} = state, issue_id, attempt, metadata)
+       when is_binary(issue_id) and is_map(metadata) do
     previous_retry = Map.get(state.retry_attempts, issue_id, %{attempt: 0})
     next_attempt = if is_integer(attempt), do: attempt, else: previous_retry.attempt + 1
     delay_ms = retry_delay(next_attempt, metadata)
@@ -1291,26 +1304,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp cleanup_startup_terminal_issue_workspace(identifier, project_key) do
-    cleanup_attrs = %{
-      project_key: project_key,
-      issue_id: nil,
-      issue_identifier: identifier,
-      worker_host: nil,
-      workspace_path: nil,
-      attempt: nil
-    }
-
-    case Workspace.cleanup_workspace(cleanup_attrs) do
-      {:ok, _} ->
-        :ok
-
-      {:error, reason, _output} ->
-        Logger.warning(
-          "Skipping startup terminal workspace cleanup for issue_identifier=#{identifier} project_key=#{project_key}: cleanup_failed: #{inspect(reason)}"
-        )
-
-        :ok
-    end
+    Workspace.cleanup_startup_terminal_issue_workspace(project_key, identifier)
   end
 
   defp run_terminal_workspace_cleanup do
@@ -1456,6 +1450,9 @@ defmodule SymphonyElixir.Orchestrator do
   defp pick_retry_workspace_path(previous_retry, metadata) do
     metadata[:workspace_path] || Map.get(previous_retry, :workspace_path)
   end
+
+  defp stable_project_key?(project_key) when is_binary(project_key), do: String.trim(project_key) != ""
+  defp stable_project_key?(_project_key), do: false
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 

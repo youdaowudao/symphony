@@ -15,9 +15,33 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, [:candidate]}
     end
 
+    def fetch_candidate_issues_for_project(project_key, states) do
+      send(self(), {:fetch_candidate_issues_for_project_called, project_key, states})
+
+      case Process.get({__MODULE__, :project_fetch_results}) do
+        %{^project_key => result} ->
+          result
+
+        _ ->
+          {:ok, [%Issue{id: "issue-1", identifier: "MT-1", state: List.first(states)}]}
+      end
+    end
+
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
       {:ok, states}
+    end
+
+    def fetch_issues_by_states_for_project(project_key, states) do
+      send(self(), {:fetch_issues_by_states_for_project_called, project_key, states})
+
+      case Process.get({__MODULE__, :project_state_results}) do
+        %{^project_key => result} ->
+          result
+
+        _ ->
+          {:ok, [%Issue{id: "state-issue-1", identifier: "MT-S1", state: List.first(states)}]}
+      end
     end
 
     def fetch_issue_states_by_ids(issue_ids) do
@@ -79,12 +103,30 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    project_registry_module = Application.get_env(:symphony_elixir, :project_registry_module)
+    project_aggregation_module = Application.get_env(:symphony_elixir, :project_aggregation_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(project_registry_module) do
+        Application.delete_env(:symphony_elixir, :project_registry_module)
+      else
+        Application.put_env(:symphony_elixir, :project_registry_module, project_registry_module)
+      end
+
+      if is_nil(project_aggregation_module) do
+        Application.delete_env(:symphony_elixir, :project_aggregation_module)
+      else
+        Application.put_env(
+          :symphony_elixir,
+          :project_aggregation_module,
+          project_aggregation_module
+        )
       end
     end)
 
@@ -208,8 +250,23 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_aggregation_module,
+      SymphonyElixir.TestSupport.FakeProjectAggregation
+    )
+
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
+    refute_receive :project_registry_normalized_entries_called
+    refute_receive {:project_aggregation_called, _project_entries}
+    refute_receive {:fetch_candidate_issues_for_project_called, _project_key, _states}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
@@ -317,6 +374,138 @@ defmodule SymphonyElixir.ExtensionsTest do
     )
 
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
+  end
+
+  test "linear adapter exposes a separate project-aware candidate entry" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Adapter.fetch_project_candidates()
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "Todo"},
+                 project_context: %SymphonyElixir.ProjectContext{
+                   project_key: "project-a",
+                   display_name: "project-a",
+                   enabled: true,
+                   max_concurrent_agents: 15
+                 }
+               }
+             ],
+             project_results: [
+               %{
+                 project_key: "project-a",
+                 status: :ok,
+                 fetched_count: 1,
+                 candidate_count: 1,
+                 reason: nil
+               }
+             ]
+           } = project_result
+
+    assert_receive :project_registry_normalized_entries_called
+
+    assert_receive {:fetch_candidate_issues_for_project_called, "project-a",
+                    [
+                      "Todo",
+                      "In Progress"
+                    ]}
+  end
+
+  test "linear adapter preserves aggregate failure shape for project-aware fetches" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    Process.put({FakeLinearClient, :project_fetch_results}, %{"project-a" => {:error, :timeout}})
+
+    assert {:error, {:all_project_fetches_failed, [%{project_key: "project-a", status: :failed, reason: :timeout}]}} =
+             Adapter.fetch_project_candidates()
+
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:fetch_candidate_issues_for_project_called, "project-a", ["Todo", "In Progress"]}
+  end
+
+  test "linear adapter exposes a separate project-aware states entry" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Adapter.fetch_project_issues_by_states(["Done"])
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "state-issue-1", identifier: "MT-S1", state: "Done"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok, fetched_count: 1, candidate_count: 1}]
+           } = project_result
+
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:fetch_issues_by_states_for_project_called, "project-a", ["Done"]}
+  end
+
+  test "memory tracker exposes a local project-aware aggregate" do
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Memory.fetch_project_candidates()
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok}]
+           } = project_result
+  end
+
+  test "memory tracker exposes a local project-aware states aggregate" do
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "Done"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Memory.fetch_project_issues_by_states(["Done"])
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "Done"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok}]
+           } = project_result
   end
 
   test "phoenix observability api preserves state, issue, and refresh responses" do
