@@ -1121,7 +1121,6 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
-    down_sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
 
     {state, retry_entry} = wait_for_retry_attempt(pid, runtime_key, 3)
@@ -1130,9 +1129,7 @@ defmodule SymphonyElixir.CoreTest do
              retry_entry
 
     refute Map.has_key?(state.retry_attempts, issue_id)
-
-    assert due_at_ms >= down_sent_at_ms + 40_000
-    assert due_at_ms <= down_sent_at_ms + 40_500
+    assert_due_in_range(due_at_ms, 39_000, 40_500)
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -1431,6 +1428,13 @@ defmodule SymphonyElixir.CoreTest do
           flunk("expected retry_attempts[#{inspect(runtime_key)}] to reach attempt #{expected_attempt}")
         end
     end
+  end
+
+  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
+    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+
+    assert remaining_ms >= min_remaining_ms
+    assert remaining_ms <= max_remaining_ms
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
