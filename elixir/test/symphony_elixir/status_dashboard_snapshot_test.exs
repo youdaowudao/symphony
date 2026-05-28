@@ -3,6 +3,22 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
 
   alias SymphonyElixir.TestSupport.Snapshot
 
+  defmodule SnapshotPayloadOrchestrator do
+    use GenServer
+
+    def start_link(opts) do
+      snapshot = Keyword.fetch!(opts, :snapshot)
+      name = Keyword.get(opts, :name)
+      GenServer.start_link(__MODULE__, snapshot, name: name)
+    end
+
+    @impl true
+    def init(snapshot), do: {:ok, snapshot}
+
+    @impl true
+    def handle_call(:snapshot, _from, snapshot), do: {:reply, snapshot, snapshot}
+  end
+
   @terminal_columns 115
 
   test "snapshot fixture: idle dashboard" do
@@ -318,6 +334,247 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
        }}
 
     Snapshot.assert_dashboard_snapshot!("credits_unlimited", render_snapshot(snapshot_data, 42.0, fixed_now()))
+  end
+
+  test "header uses multi-project summary instead of a single Project line" do
+    snapshot_data =
+      {:ok,
+       %{
+         projects: [
+           %{project_key: "ENG", project_display_name: "ENG", running_count: 1, retrying_count: 0, blocked_count: 0},
+           %{project_key: "OPS", project_display_name: "OPS", running_count: 1, retrying_count: 0, blocked_count: 0},
+           %{project_key: "ZERO", project_display_name: "ZERO", running_count: 0, retrying_count: 0, blocked_count: 0}
+         ],
+         running: [
+           running_entry(%{
+             project_key: "ENG",
+             issue_identifier: "ENG-101",
+             identifier: "ENG-101"
+           }),
+           running_entry(%{
+             project_key: "OPS",
+             issue_identifier: "OPS-202",
+             identifier: "OPS-202",
+             session_id: "thread-abcdef1234567890"
+           })
+         ],
+         retrying: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    plain = render_snapshot(snapshot_data, 0.0, fixed_now()) |> Snapshot.strip_ansi()
+
+    refute plain =~ "│ Project: "
+    assert plain =~ "Projects:"
+    assert plain =~ "enabled 3 / active 2"
+    assert plain =~ "ENG, OPS"
+    assert plain =~ "Tracker: n/a"
+  end
+
+  test "live dashboard render path counts blocked-only projects in header summary" do
+    dashboard_name = Module.concat(__MODULE__, :BlockedProjectRenderDashboard)
+    parent = self()
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    on_exit(fn ->
+      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+      end
+    end)
+
+    if is_pid(orchestrator_pid) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    end
+
+    snapshot = %{
+      projects: [
+        %{project_key: "ENG", project_display_name: "ENG", running_count: 1, retrying_count: 0, blocked_count: 0},
+        %{project_key: "OPS", project_display_name: "OPS", running_count: 0, retrying_count: 0, blocked_count: 1},
+        %{project_key: "ZERO", project_display_name: "ZERO", running_count: 0, retrying_count: 0, blocked_count: 0}
+      ],
+      running: [
+        running_entry(%{
+          project_key: "ENG",
+          issue_identifier: "ENG-101",
+          identifier: "ENG-101"
+        })
+      ],
+      retrying: [],
+      blocked: [
+        %{
+          issue_id: "blocked-1",
+          identifier: "MT-BLOCKED",
+          issue_identifier: "OPS-909",
+          project_key: "OPS",
+          state: "blocked",
+          session_id: "thread-blocked909",
+          blocked_at: ~U[2026-05-24 21:35:38Z],
+          error: "waiting for human input",
+          last_codex_event: :turn_input_required,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/input_required"}
+          }
+        }
+      ],
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      rate_limits: nil
+    }
+
+    {:ok, _orchestrator_pid} =
+      start_supervised({SnapshotPayloadOrchestrator, name: SymphonyElixir.Orchestrator, snapshot: snapshot})
+
+    {:ok, dashboard_pid} =
+      StatusDashboard.start_link(
+        name: dashboard_name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 16,
+        render_fun: fn content -> send(parent, {:render, content}) end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(dashboard_pid) do
+        Process.exit(dashboard_pid, :normal)
+      end
+    end)
+
+    StatusDashboard.notify_update(dashboard_name)
+
+    assert_receive {:render, rendered}, 200
+
+    plain = Snapshot.strip_ansi(rendered)
+
+    assert plain =~ "Projects:"
+    assert plain =~ "enabled 3 / active 2"
+    assert plain =~ "ENG, OPS"
+    assert plain =~ "OPS/OPS-909"
+  end
+
+  test "running rows show compact project key and issue identifier" do
+    row =
+      StatusDashboard.format_running_summary_for_test(
+        %{
+          identifier: "MT-239",
+          issue_identifier: "OPS-321",
+          project_key: "OPS",
+          state: "running",
+          runtime_status: "running",
+          session_id: "thread-1234567890",
+          codex_app_server_pid: "4242",
+          codex_total_tokens: 12,
+          runtime_seconds: 15,
+          last_codex_event: :notification,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/started"}
+          }
+        },
+        nil,
+        fixed_now()
+      )
+
+    plain = Regex.replace(~r/\e\[[\d;]*m/, row, "")
+
+    assert plain =~ "OPS/OPS-321"
+    refute plain =~ "MT-239"
+  end
+
+  test "retry rows show compact project key and issue identifier" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [
+           retry_entry(%{
+             project_key: "APP",
+             issue_identifier: "APP-88",
+             identifier: "MT-880",
+             attempt: 2,
+             due_in_ms: 2_500,
+             error: "retry scheduled"
+           })
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    plain = render_snapshot(snapshot_data, 0.0, fixed_now()) |> Snapshot.strip_ansi()
+
+    assert plain =~ "APP/APP-88"
+    refute plain =~ "MT-880 attempt=2"
+  end
+
+  test "terminal snapshot renders blocked issue information when blocked entries exist" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [],
+         retrying: [],
+         blocked: [
+           %{
+             issue_id: "issue-7",
+             identifier: "MT-707",
+             issue_identifier: "OPS-707",
+             project_key: "OPS",
+             state: "blocked",
+             session_id: "thread-blocked707",
+             blocked_at: ~U[2026-05-24 21:35:38Z],
+             error: "waiting for human input",
+             last_codex_event: :turn_input_required,
+             last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+             last_codex_message: %{
+               event: :notification,
+               message: %{"method" => "turn/input_required"}
+             }
+           }
+         ],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    plain = render_snapshot(snapshot_data, 0.0, fixed_now()) |> Snapshot.strip_ansi()
+
+    assert plain =~ "blocked"
+    assert plain =~ "OPS/OPS-707"
+  end
+
+  test "running rows fall back to identifier when real snapshot entries omit issue_identifier" do
+    snapshot_data =
+      {:ok,
+       %{
+         running: [
+           %{
+             issue_id: "issue-42",
+             identifier: "MT-REAL",
+             project_key: "OPS",
+             state: "running",
+             session_id: "thread-real-123456",
+             codex_app_server_pid: "4242",
+             codex_total_tokens: 12,
+             runtime_seconds: 15,
+             started_at: DateTime.add(fixed_now(), -15, :second),
+             turn_count: 2,
+             last_codex_event: :notification,
+             last_codex_timestamp: ~U[2026-05-24 21:39:28Z],
+             last_codex_message: turn_started_message()
+           }
+         ],
+         retrying: [],
+         blocked: [],
+         codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+         rate_limits: nil
+       }}
+
+    plain = render_snapshot(snapshot_data, 0.0, fixed_now()) |> Snapshot.strip_ansi()
+
+    assert plain =~ "OPS/MT-REAL"
   end
 
   defp render_snapshot(snapshot_data, tps, now) do

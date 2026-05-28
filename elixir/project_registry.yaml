@@ -1,0 +1,13 @@
+# Deferred only: `repo_url` is not part of this task's schema.
+# Do not add placeholder schema for deferred items here.
+schema_version: 1
+linear_token_relative_path: ".config/linear/linear_api_key.token"
+projects:
+  - project_key: "03b2b4a16461"
+    display_name: "Symphony"
+    enabled: true
+    max_concurrent_agents: 15
+  - project_key: "327e2b00c1cd"
+    display_name: "LinearAgents"
+    enabled: true
+    max_concurrent_agents: 15

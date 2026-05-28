@@ -23,6 +23,7 @@ defmodule SymphonyElixir.PromptBuilder do
       @render_opts
     )
     |> IO.iodata_to_binary()
+    |> normalize_prompt_text()
   end
 
   defp prompt_template!({:ok, %{prompt_template: prompt}}), do: default_prompt(prompt)
@@ -52,6 +53,7 @@ defmodule SymphonyElixir.PromptBuilder do
   defp to_solid_value(%_{} = value), do: value |> Map.from_struct() |> to_solid_map()
   defp to_solid_value(value) when is_map(value), do: to_solid_map(value)
   defp to_solid_value(value) when is_list(value), do: Enum.map(value, &to_solid_value/1)
+  defp to_solid_value(value) when is_binary(value), do: normalize_prompt_text(value)
   defp to_solid_value(value), do: value
 
   defp default_prompt(prompt) when is_binary(prompt) do
@@ -59,6 +61,14 @@ defmodule SymphonyElixir.PromptBuilder do
       Config.workflow_prompt()
     else
       prompt
+    end
+  end
+
+  defp normalize_prompt_text(value) when is_binary(value) do
+    if String.valid?(value) do
+      value
+    else
+      String.replace_invalid(value, "")
     end
   end
 end

@@ -15,9 +15,33 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok, [:candidate]}
     end
 
+    def fetch_candidate_issues_for_project(project_key, states) do
+      send(self(), {:fetch_candidate_issues_for_project_called, project_key, states})
+
+      case Process.get({__MODULE__, :project_fetch_results}) do
+        %{^project_key => result} ->
+          result
+
+        _ ->
+          {:ok, [%Issue{id: "issue-1", identifier: "MT-1", state: List.first(states)}]}
+      end
+    end
+
     def fetch_issues_by_states(states) do
       send(self(), {:fetch_issues_by_states_called, states})
       {:ok, states}
+    end
+
+    def fetch_issues_by_states_for_project(project_key, states) do
+      send(self(), {:fetch_issues_by_states_for_project_called, project_key, states})
+
+      case Process.get({__MODULE__, :project_state_results}) do
+        %{^project_key => result} ->
+          result
+
+        _ ->
+          {:ok, [%Issue{id: "state-issue-1", identifier: "MT-S1", state: List.first(states)}]}
+      end
     end
 
     def fetch_issue_states_by_ids(issue_ids) do
@@ -79,12 +103,30 @@ defmodule SymphonyElixir.ExtensionsTest do
 
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    project_registry_module = Application.get_env(:symphony_elixir, :project_registry_module)
+    project_aggregation_module = Application.get_env(:symphony_elixir, :project_aggregation_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(project_registry_module) do
+        Application.delete_env(:symphony_elixir, :project_registry_module)
+      else
+        Application.put_env(:symphony_elixir, :project_registry_module, project_registry_module)
+      end
+
+      if is_nil(project_aggregation_module) do
+        Application.delete_env(:symphony_elixir, :project_aggregation_module)
+      else
+        Application.put_env(
+          :symphony_elixir,
+          :project_aggregation_module,
+          project_aggregation_module
+        )
       end
     end)
 
@@ -208,8 +250,23 @@ defmodule SymphonyElixir.ExtensionsTest do
   test "linear adapter delegates reads and validates mutation responses" do
     Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
 
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_aggregation_module,
+      SymphonyElixir.TestSupport.FakeProjectAggregation
+    )
+
     assert {:ok, [:candidate]} = Adapter.fetch_candidate_issues()
     assert_receive :fetch_candidate_issues_called
+    refute_receive :project_registry_normalized_entries_called
+    refute_receive {:project_aggregation_called, _project_entries}
+    refute_receive {:fetch_candidate_issues_for_project_called, _project_key, _states}
 
     assert {:ok, ["Todo"]} = Adapter.fetch_issues_by_states(["Todo"])
     assert_receive {:fetch_issues_by_states_called, ["Todo"]}
@@ -319,11 +376,143 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert {:error, :issue_update_failed} = Adapter.update_issue_state("issue-1", "Odd")
   end
 
+  test "linear adapter exposes a separate project-aware candidate entry" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Adapter.fetch_project_candidates()
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "Todo"},
+                 project_context: %SymphonyElixir.ProjectContext{
+                   project_key: "project-a",
+                   display_name: "project-a",
+                   enabled: true,
+                   max_concurrent_agents: 15
+                 }
+               }
+             ],
+             project_results: [
+               %{
+                 project_key: "project-a",
+                 status: :ok,
+                 fetched_count: 1,
+                 candidate_count: 1,
+                 reason: nil
+               }
+             ]
+           } = project_result
+
+    assert_receive :project_registry_normalized_entries_called
+
+    assert_receive {:fetch_candidate_issues_for_project_called, "project-a",
+                    [
+                      "Todo",
+                      "In Progress"
+                    ]}
+  end
+
+  test "linear adapter preserves aggregate failure shape for project-aware fetches" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    Process.put({FakeLinearClient, :project_fetch_results}, %{"project-a" => {:error, :timeout}})
+
+    assert {:error, {:all_project_fetches_failed, [%{project_key: "project-a", status: :failed, reason: :timeout}]}} =
+             Adapter.fetch_project_candidates()
+
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:fetch_candidate_issues_for_project_called, "project-a", ["Todo", "In Progress"]}
+  end
+
+  test "linear adapter exposes a separate project-aware states entry" do
+    Application.put_env(:symphony_elixir, :linear_client_module, FakeLinearClient)
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Adapter.fetch_project_issues_by_states(["Done"])
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "state-issue-1", identifier: "MT-S1", state: "Done"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok, fetched_count: 1, candidate_count: 1}]
+           } = project_result
+
+    assert_receive :project_registry_normalized_entries_called
+    assert_receive {:fetch_issues_by_states_for_project_called, "project-a", ["Done"]}
+  end
+
+  test "memory tracker exposes a local project-aware aggregate" do
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Memory.fetch_project_candidates()
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "In Progress"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok}]
+           } = project_result
+  end
+
+  test "memory tracker exposes a local project-aware states aggregate" do
+    issue = %Issue{id: "issue-1", identifier: "MT-1", state: "Done"}
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      SymphonyElixir.TestSupport.FakeProjectRegistry
+    )
+
+    assert {:ok, project_result} = Memory.fetch_project_issues_by_states(["Done"])
+
+    assert %{
+             candidates: [
+               %SymphonyElixir.Tracker.ProjectCandidate{
+                 issue: %Issue{id: "issue-1", identifier: "MT-1", state: "Done"},
+                 project_context: %SymphonyElixir.ProjectContext{project_key: "project-a"}
+               }
+             ],
+             project_results: [%{project_key: "project-a", status: :ok}]
+           } = project_result
+  end
+
   test "phoenix observability api preserves state, issue, and refresh responses" do
     snapshot = static_snapshot()
     orchestrator_name = Module.concat(__MODULE__, :ObservabilityApiOrchestrator)
 
-    {:ok, _pid} =
+    {:ok, orchestrator_pid} =
       StaticOrchestrator.start_link(
         name: orchestrator_name,
         snapshot: snapshot,
@@ -342,11 +531,31 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1, "stale" => 0, "pending" => 2},
+             "polling" => %{},
+             "projects" => [
+               %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
+                 "running_count" => 1,
+                 "retrying_count" => 1,
+                 "blocked_count" => 1
+               },
+               %{
+                 "project_key" => "project-b",
+                 "project_display_name" => "project-b",
+                 "running_count" => 0,
+                 "retrying_count" => 0,
+                 "blocked_count" => 0
+               }
+             ],
              "running" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "attempt" => 0,
                  "state" => "In Progress",
                  "runtime_status" => "running",
                  "worker_host" => nil,
@@ -355,31 +564,38 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
+                 "summary_text" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => state_payload["running"] |> List.first() |> Map.fetch!("last_event_at"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
+             "recovery_events" => [],
              "retrying" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
                  "attempt" => 2,
                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
+                 "last_event_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("last_event_at"),
                  "error" => "boom",
-                 "worker_host" => nil,
-                 "workspace_path" => nil
+                 "worker_host" => "dm-dev2",
+                 "workspace_path" => "/workspaces/project-a/MT-RETRY"
                }
              ],
              "blocked" => [
                %{
+                 "project_key" => "project-a",
+                 "project_display_name" => "project-a",
                  "issue_id" => "issue-blocked",
                  "issue_identifier" => "MT-BLOCKED",
                  "state" => "In Progress",
                  "runtime_status" => "waiting_input",
                  "error" => "codex turn requires operator input",
                  "worker_host" => "dm-dev2",
-                 "workspace_path" => "/workspaces/MT-BLOCKED",
+                 "workspace_path" => "/workspaces/project-a/MT-BLOCKED",
                  "session_id" => "thread-blocked",
                  "blocked_at" => state_payload["blocked"] |> List.first() |> Map.fetch!("blocked_at"),
                  "last_event" => "turn_input_required",
@@ -396,16 +612,18 @@ defmodule SymphonyElixir.ExtensionsTest do
              "rate_limits" => %{"primary" => %{"remaining" => 11}}
            }
 
-    conn = get(build_conn(), "/api/v1/MT-HTTP")
+    conn = get(build_conn(), "/api/v1/projects/project-a/issues/MT-HTTP")
     issue_payload = json_response(conn, 200)
 
     assert issue_payload == %{
+             "project_key" => "project-a",
+             "project_display_name" => "project-a",
              "issue_identifier" => "MT-HTTP",
              "issue_id" => "issue-http",
              "status" => "running",
              "runtime_status" => "running",
              "workspace" => %{
-               "path" => Path.join(Config.settings!().workspace.root, "MT-HTTP"),
+               "path" => nil,
                "host" => nil
              },
              "attempts" => %{"restart_count" => 0, "current_retry_attempt" => 0},
@@ -436,14 +654,32 @@ defmodule SymphonyElixir.ExtensionsTest do
              "tracked" => %{}
            }
 
+    conn = get(build_conn(), "/api/v1/MT-HTTP")
+
+    assert %{
+             "project_key" => "project-a",
+             "project_display_name" => "project-a",
+             "issue_identifier" => "MT-HTTP"
+           } = json_response(conn, 200)
+
     conn = get(build_conn(), "/api/v1/MT-RETRY")
 
-    assert %{"status" => "retrying", "retry" => %{"attempt" => 2, "error" => "boom"}} =
+    assert %{
+             "project_key" => "project-a",
+             "status" => "retrying",
+             "retry" => %{
+               "attempt" => 2,
+               "error" => "boom",
+               "worker_host" => "dm-dev2",
+               "workspace_path" => "/workspaces/project-a/MT-RETRY"
+             }
+           } =
              json_response(conn, 200)
 
     conn = get(build_conn(), "/api/v1/MT-BLOCKED")
 
     assert %{
+             "project_key" => "project-a",
              "status" => "blocked",
              "last_error" => "codex turn requires operator input",
              "blocked" => %{
@@ -454,10 +690,142 @@ defmodule SymphonyElixir.ExtensionsTest do
              }
            } = json_response(conn, 200)
 
+    conflict_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-project-b",
+            identifier: "MT-HTTP",
+            project_key: "project-b",
+            state: "In Progress",
+            worker_host: "dm-dev9",
+            workspace_path: "/workspaces/project-b/MT-HTTP",
+            session_id: "thread-http-b",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, conflict_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-HTTP")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" => "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
+           }
+
     conn = get(build_conn(), "/api/v1/MT-MISSING")
 
     assert json_response(conn, 404) == %{
              "error" => %{"code" => "issue_not_found", "message" => "Issue not found"}
+           }
+
+    missing_project_key_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-missing-project",
+            identifier: "MT-NOPROJECT",
+            project_key: nil,
+            state: "In Progress",
+            worker_host: nil,
+            workspace_path: nil,
+            session_id: "thread-http-missing-project",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "missing project key",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 0,
+            codex_output_tokens: 0,
+            codex_total_tokens: 0,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, missing_project_key_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-NOPROJECT")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" => "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
+           }
+
+    mixed_project_scope_snapshot =
+      update_in(snapshot.running, fn running ->
+        [
+          %{
+            issue_id: "issue-http-mixed-scope-with-project",
+            identifier: "MT-MIXEDSCOPE",
+            project_key: "project-a",
+            state: "In Progress",
+            worker_host: "dm-dev10",
+            workspace_path: "/workspaces/project-a/MT-MIXEDSCOPE",
+            session_id: "thread-http-mixed-a",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "project scoped duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          },
+          %{
+            issue_id: "issue-http-mixed-scope-without-project",
+            identifier: "MT-MIXEDSCOPE",
+            project_key: nil,
+            state: "In Progress",
+            worker_host: "dm-dev11",
+            workspace_path: nil,
+            session_id: "thread-http-mixed-missing",
+            turn_count: 1,
+            codex_app_server_pid: nil,
+            last_codex_message: "missing scope duplicate",
+            last_codex_timestamp: DateTime.utc_now(),
+            last_codex_event: :notification,
+            codex_input_tokens: 1,
+            codex_output_tokens: 1,
+            codex_total_tokens: 2,
+            started_at: DateTime.utc_now()
+          }
+          | running
+        ]
+      end)
+
+    :sys.replace_state(orchestrator_pid, fn state ->
+      Keyword.put(state, :snapshot, mixed_project_scope_snapshot)
+    end)
+
+    conn = get(build_conn(), "/api/v1/MT-MIXEDSCOPE")
+
+    assert json_response(conn, 409) == %{
+             "error" => %{
+               "code" => "project_scope_required",
+               "message" => "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+             }
            }
 
     conn = post(build_conn(), "/api/v1/refresh", %{})
@@ -543,9 +911,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".dashboard-shell {"
+    assert dashboard_css =~ ".meta-chip.warn {"
+    assert dashboard_css =~ ".main-grid {"
+    assert dashboard_css =~ ".running-rows {"
+    assert dashboard_css =~ ".copy-chip {"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -578,24 +948,31 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Multi-Project Operations Home"
+    assert html =~ "多项目共享执行池"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
-    assert html =~ "turn blocked: waiting for user input"
-    assert html =~ "waiting_input"
+    assert html =~ "当前异常"
+    assert html =~ "codex turn requires operator input"
+    assert html =~ "boom"
+    assert html =~ "thread-blocked"
     assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
-    assert html =~ "Codex update"
+    assert html =~ "最近恢复事件"
+    assert html =~ "copy session"
+    assert html =~ "copy session 仅在 running 行可用"
+    assert html =~ "Projects"
+    assert html =~ "Todo Pool"
+    assert html =~ "待执行任务池占位"
+    assert html =~ "project-a"
+    assert html =~ "project-b"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert html =~ ~s(id="current-exceptions-list")
+    assert html =~ ~s(id="running-list")
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -683,7 +1060,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "stale" => 0,
+             "pending" => 2
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200
@@ -729,10 +1113,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     now = DateTime.utc_now()
 
     %{
+      projects: [
+        %{project_key: "project-a", display_name: nil, enabled: true, max_concurrent_agents: 15},
+        %{project_key: "project-b", display_name: nil, enabled: true, max_concurrent_agents: 15}
+      ],
       running: [
         %{
           issue_id: "issue-http",
           identifier: "MT-HTTP",
+          project_key: "project-a",
           state: "In Progress",
           session_id: "thread-http",
           turn_count: 7,
@@ -750,7 +1139,10 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-retry",
           identifier: "MT-RETRY",
+          project_key: "project-a",
           attempt: 2,
+          worker_host: "dm-dev2",
+          workspace_path: "/workspaces/project-a/MT-RETRY",
           due_in_ms: 2_000,
           error: "boom"
         }
@@ -759,10 +1151,11 @@ defmodule SymphonyElixir.ExtensionsTest do
         %{
           issue_id: "issue-blocked",
           identifier: "MT-BLOCKED",
+          project_key: "project-a",
           state: "In Progress",
           error: "codex turn requires operator input",
           worker_host: "dm-dev2",
-          workspace_path: "/workspaces/MT-BLOCKED",
+          workspace_path: "/workspaces/project-a/MT-BLOCKED",
           session_id: "thread-blocked",
           blocked_at: DateTime.utc_now(),
           last_codex_event: :turn_input_required,

@@ -14,6 +14,7 @@
 
 - 总体系统规格：`SPEC.md`
 - 长期主题、阶段规划、长期合同：`docs/initiatives/`
+- 简单维护记录：`docs/initiatives/CHANGELOG.md`
 - Superpowers 设计 / 计划 / 验证 / 任务：`docs/superpowers/`
 - 事故与事故级复核：`docs/incidents/`
 - 文档治理规则与模板：`docs/governance/`
@@ -41,6 +42,7 @@
 ### 长期主题
 
 - [docs/initiatives/README.md](./initiatives/README.md)
+- [docs/initiatives/CHANGELOG.md](./initiatives/CHANGELOG.md)
 - [docs/initiatives/SPEC/需求阶段分析详细要求.md](./initiatives/SPEC/需求阶段分析详细要求.md)
 
 ### Superpowers 与事故

@@ -23,6 +23,8 @@ defmodule SymphonyElixir.TestSupport do
 
       import SymphonyElixir.TestSupport,
         only: [
+          write_project_registry_file!: 1,
+          write_project_registry_file!: 2,
           write_workflow_file!: 1,
           write_workflow_file!: 2,
           restore_env: 2,
@@ -32,6 +34,9 @@ defmodule SymphonyElixir.TestSupport do
         ]
 
       setup do
+        previous_linear_api_token =
+          Application.get_env(:symphony_elixir, :linear_api_token, :__symphony_missing__)
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -44,12 +49,24 @@ defmodule SymphonyElixir.TestSupport do
         Workflow.set_workflow_file_path(workflow_file)
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
+        Application.put_env(:symphony_elixir, :linear_api_token, "test-linear-token")
 
         on_exit(fn ->
           Application.delete_env(:symphony_elixir, :workflow_file_path)
           Application.delete_env(:symphony_elixir, :server_port_override)
+          Application.delete_env(:symphony_elixir, :project_registry_module)
+          Application.delete_env(:symphony_elixir, :project_aggregation_module)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+
+          case previous_linear_api_token do
+            :__symphony_missing__ ->
+              Application.delete_env(:symphony_elixir, :linear_api_token)
+
+            value ->
+              Application.put_env(:symphony_elixir, :linear_api_token, value)
+          end
+
           File.rm_rf(workflow_root)
         end)
 
@@ -70,6 +87,12 @@ defmodule SymphonyElixir.TestSupport do
       end
     end
 
+    :ok
+  end
+
+  def write_project_registry_file!(path, registry \\ %{schema_version: 1, linear_token_relative_path: ".config/linear/linear_api_key.token", projects: []}) do
+    content = project_registry_content(registry)
+    File.write!(path, content)
     :ok
   end
 
@@ -116,7 +139,7 @@ defmodule SymphonyElixir.TestSupport do
           workspace_root: Path.join(System.tmp_dir!(), "symphony_workspaces"),
           worker_ssh_hosts: [],
           worker_max_concurrent_agents_per_host: nil,
-          max_concurrent_agents: 10,
+          max_concurrent_agents: 20,
           max_turns: 20,
           max_retry_backoff_ms: 300_000,
           max_concurrent_agents_by_state: %{},
@@ -238,6 +261,68 @@ defmodule SymphonyElixir.TestSupport do
 
   defp yaml_value(value), do: yaml_value(to_string(value))
 
+  defp project_registry_content(content) when is_binary(content), do: content
+
+  defp project_registry_content(%{} = registry) do
+    lines =
+      []
+      |> maybe_append_registry_field(
+        "schema_version",
+        Map.get(registry, :schema_version, Map.get(registry, "schema_version"))
+      )
+      |> maybe_append_registry_field(
+        "linear_token_relative_path",
+        Map.get(
+          registry,
+          :linear_token_relative_path,
+          Map.get(registry, "linear_token_relative_path")
+        )
+      )
+      |> maybe_append_projects_field(Map.get(registry, :projects, Map.get(registry, "projects", :missing)))
+      |> Enum.reject(&is_nil/1)
+
+    Enum.join(lines, "\n") <> "\n"
+  end
+
+  defp maybe_append_registry_field(lines, _key, nil), do: lines
+
+  defp maybe_append_registry_field(lines, key, value) do
+    lines ++ ["#{key}: #{yaml_value(value)}"]
+  end
+
+  defp maybe_append_projects_field(lines, :missing), do: lines
+
+  defp maybe_append_projects_field(lines, projects) do
+    case projects do
+      list when is_list(list) ->
+        lines ++ ["projects:", project_registry_projects_yaml(list)]
+
+      other ->
+        lines ++ ["projects: #{yaml_value(other)}"]
+    end
+  end
+
+  defp project_registry_projects_yaml([]), do: "  []"
+
+  defp project_registry_projects_yaml(projects) when is_list(projects) do
+    Enum.map_join(projects, "\n", &project_registry_project_yaml/1)
+  end
+
+  defp project_registry_project_yaml(%{} = project) do
+    project
+    |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+    |> Enum.with_index()
+    |> Enum.map_join("\n", fn {{key, value}, index} ->
+      prefix = if index == 0, do: "  - ", else: "    "
+      "#{prefix}#{key}: #{yaml_value(value)}"
+    end)
+  end
+
+  defp project_registry_project_yaml(value) do
+    "  - #{yaml_value(value)}"
+  end
+
   defp hooks_yaml(nil, nil, nil, nil, timeout_ms), do: "hooks:\n  timeout_ms: #{yaml_value(timeout_ms)}"
 
   defp hooks_yaml(hook_after_create, hook_before_run, hook_after_run, hook_before_remove, timeout_ms) do
@@ -301,3 +386,6 @@ defmodule SymphonyElixir.TestSupport do
     "  #{name}: |\n#{indented}"
   end
 end
+
+Code.require_file("fake_project_registry.ex", __DIR__)
+Code.require_file("fake_project_aggregation.ex", __DIR__)

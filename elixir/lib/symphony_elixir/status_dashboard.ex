@@ -15,7 +15,7 @@ defmodule SymphonyElixir.StatusDashboard do
   @throughput_graph_window_ms 10 * 60 * 1000
   @throughput_graph_columns 24
   @sparkline_blocks ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
-  @running_id_width 8
+  @running_id_width 14
   @running_stage_width 14
   @running_pid_width 8
   @running_age_width 12
@@ -318,18 +318,11 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp snapshot_with_samples(token_samples, now_ms) do
     case snapshot_payload() do
-      {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
+      {:ok, %{codex_totals: codex_totals} = snapshot} ->
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
         {
-          {:ok,
-           %{
-             running: running,
-             retrying: retrying,
-             codex_totals: codex_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
-           }},
+          {:ok, snapshot},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
 
@@ -345,7 +338,9 @@ defmodule SymphonyElixir.StatusDashboard do
     case snapshot_data do
       {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
         rate_limits = Map.get(snapshot, :rate_limits)
-        project_link_lines = format_project_link_lines()
+        blocked = Map.get(snapshot, :blocked, [])
+        projects = Map.get(snapshot, :projects, [])
+        project_link_lines = format_project_link_lines(projects, running, retrying, blocked)
         project_refresh_line = format_project_refresh_line(Map.get(snapshot, :polling))
         codex_input_tokens = Map.get(codex_totals, :input_tokens, 0)
         codex_output_tokens = Map.get(codex_totals, :output_tokens, 0)
@@ -356,6 +351,7 @@ defmodule SymphonyElixir.StatusDashboard do
         running_rows = format_running_rows(running, terminal_columns_override, now)
         running_to_backoff_spacer = if(running == [], do: [], else: ["│"])
         backoff_rows = format_retry_rows(retrying)
+        blocked_section = format_blocked_section(blocked, terminal_columns_override, now)
 
         ([
            colorize("╭─ SYMPHONY STATUS", @ansi_bold),
@@ -384,6 +380,7 @@ defmodule SymphonyElixir.StatusDashboard do
            running_to_backoff_spacer ++
            [colorize("├─ Backoff queue", @ansi_bold), "│"] ++
            backoff_rows ++
+           blocked_section ++
            [closing_border()])
         |> List.flatten()
         |> Enum.join("\n")
@@ -393,7 +390,7 @@ defmodule SymphonyElixir.StatusDashboard do
           colorize("╭─ SYMPHONY STATUS", @ansi_bold),
           colorize("│ Orchestrator snapshot unavailable", @ansi_red),
           colorize("│ Throughput: ", @ansi_bold) <> colorize("#{format_tps(tps)} tps", @ansi_cyan),
-          format_project_link_lines(),
+          format_project_link_lines([], [], [], []),
           format_project_refresh_line(nil),
           closing_border()
         ]
@@ -402,24 +399,52 @@ defmodule SymphonyElixir.StatusDashboard do
     end
   end
 
-  defp format_project_link_lines do
-    project_part =
-      case Config.settings!().tracker.project_slug do
-        project_slug when is_binary(project_slug) and project_slug != "" ->
-          colorize(linear_project_url(project_slug), @ansi_cyan)
+  defp format_project_link_lines(projects, running, retrying, blocked) do
+    project_summary_line =
+      colorize("│ Projects: ", @ansi_bold) <>
+        format_projects_summary(projects, running, retrying, blocked)
 
-        _ ->
-          colorize("n/a", @ansi_gray)
-      end
-
-    project_line = colorize("│ Project: ", @ansi_bold) <> project_part
+    tracker_line =
+      colorize("│ Tracker: ", @ansi_bold) <>
+        colorize("n/a", @ansi_gray)
 
     case dashboard_url() do
       url when is_binary(url) ->
-        [project_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
+        [project_summary_line, tracker_line, colorize("│ Dashboard: ", @ansi_bold) <> colorize(url, @ansi_cyan)]
 
       _ ->
-        [project_line]
+        [project_summary_line, tracker_line]
+    end
+  end
+
+  defp format_projects_summary(projects, running, retrying, blocked) do
+    active_project_keys =
+      [running, retrying, blocked]
+      |> List.flatten()
+      |> Enum.map(&Map.get(&1, :project_key))
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    enabled_project_keys =
+      projects
+      |> Enum.map(&Map.get(&1, :project_key))
+      |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+      |> Enum.uniq()
+      |> Enum.sort()
+
+    enabled_count = length(enabled_project_keys)
+    active_count = length(active_project_keys)
+
+    summary =
+      colorize("enabled #{enabled_count} / active #{active_count}", @ansi_cyan)
+
+    case active_project_keys do
+      [] ->
+        summary
+
+      _ ->
+        summary <> colorize(" | ", @ansi_gray) <> colorize(Enum.join(active_project_keys, ", "), @ansi_cyan)
     end
   end
 
@@ -436,8 +461,6 @@ defmodule SymphonyElixir.StatusDashboard do
   defp format_project_refresh_line(_) do
     colorize("│ Next refresh: ", @ansi_bold) <> colorize("n/a", @ansi_gray)
   end
-
-  defp linear_project_url(project_slug), do: "https://linear.app/project/#{project_slug}/issues"
 
   defp dashboard_url do
     dashboard_url(Config.settings!().server.host, Config.server_port(), HttpServer.bound_port())
@@ -563,30 +586,47 @@ defmodule SymphonyElixir.StatusDashboard do
     do: dashboard_url(host, configured_port, bound_port)
 
   defp snapshot_payload do
-    if Process.whereis(Orchestrator) do
-      case Orchestrator.snapshot() do
-        %{
-          running: running,
-          retrying: retrying,
-          codex_totals: codex_totals
-        } = snapshot
-        when is_list(running) and is_list(retrying) ->
-          {:ok,
-           %{
-             running: running,
-             retrying: retrying,
-             codex_totals: codex_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
-           }}
+    snapshot_payload(Orchestrator)
+  end
 
-        _ ->
-          :error
-      end
+  defp snapshot_payload(orchestrator_server) do
+    if orchestrator_available?(orchestrator_server) do
+      orchestrator_server
+      |> Orchestrator.snapshot(15_000)
+      |> normalize_snapshot_payload()
     else
       :error
     end
   end
+
+  defp orchestrator_available?(server) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _ -> false
+    end
+  end
+
+  defp normalize_snapshot_payload(
+         %{
+           running: running,
+           retrying: retrying,
+           codex_totals: codex_totals
+         } = snapshot
+       )
+       when is_list(running) and is_list(retrying) do
+    {:ok,
+     %{
+       running: running,
+       retrying: retrying,
+       blocked: Map.get(snapshot, :blocked, []),
+       projects: Map.get(snapshot, :projects, []),
+       codex_totals: codex_totals,
+       rate_limits: Map.get(snapshot, :rate_limits),
+       polling: Map.get(snapshot, :polling)
+     }}
+  end
+
+  defp normalize_snapshot_payload(_snapshot), do: :error
 
   defp format_running_rows(running, terminal_columns_override, now) do
     if running == [] do
@@ -603,7 +643,7 @@ defmodule SymphonyElixir.StatusDashboard do
 
   # credo:disable-for-next-line
   defp format_running_summary(running_entry, terminal_columns_override, now) do
-    issue = format_cell(running_entry.identifier || "unknown", @running_id_width)
+    issue = format_cell(compact_issue_label(running_entry), @running_id_width)
     runtime_status = running_runtime_status(running_entry, now)
     state = Atom.to_string(runtime_status)
     state_display = format_cell(to_string(state), @running_stage_width)
@@ -654,19 +694,59 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp format_retry_summary(retry_entry) do
-    issue_id = retry_entry.issue_id || "unknown"
-    identifier = retry_entry.identifier || issue_id
     attempt = retry_entry.attempt || 0
     due_in_ms = retry_entry.due_in_ms || 0
     error = format_retry_error(retry_entry.error)
 
     "│  #{colorize("↻", @ansi_orange)} " <>
-      colorize("#{identifier}", @ansi_red) <>
+      colorize(compact_issue_label(retry_entry), @ansi_red) <>
       " " <>
       colorize("attempt=#{attempt}", @ansi_yellow) <>
       colorize(" in ", @ansi_dim) <>
       colorize(next_in_words(due_in_ms), @ansi_cyan) <>
       error
+  end
+
+  defp format_blocked_section([], _terminal_columns_override, _now), do: []
+
+  defp format_blocked_section(blocked, terminal_columns_override, now) do
+    rows =
+      blocked
+      |> Enum.sort_by(&compact_issue_label/1)
+      |> Enum.map(&format_blocked_summary(&1, terminal_columns_override, now))
+
+    ["│", colorize("├─ Blocked", @ansi_bold), "│"] ++ rows
+  end
+
+  defp format_blocked_summary(blocked_entry, terminal_columns_override, now) do
+    label = compact_issue_label(blocked_entry)
+    reason = blocked_reason(blocked_entry, terminal_columns_override)
+    freshness = relative_update_label(freshness_timestamp(blocked_entry), now)
+
+    "│  " <>
+      colorize("!", @ansi_red) <>
+      " " <>
+      colorize(label, @ansi_red) <>
+      " " <>
+      colorize("blocked", @ansi_red) <>
+      colorize(" · ", @ansi_gray) <>
+      colorize(reason, @ansi_dim) <>
+      colorize(" · ", @ansi_gray) <>
+      colorize(freshness, @ansi_cyan)
+  end
+
+  defp blocked_reason(blocked_entry, terminal_columns_override) do
+    error = Map.get(blocked_entry, :error)
+
+    base =
+      if is_binary(error) and String.trim(error) != "" do
+        error
+      else
+        summarize_message(Map.get(blocked_entry, :last_codex_message))
+      end
+
+    width = max(20, (terminal_columns_override || terminal_columns()) - 38)
+    truncate(inline_text(base), width)
   end
 
   defp next_in_words(due_in_ms) when is_integer(due_in_ms) do
@@ -929,6 +1009,33 @@ defmodule SymphonyElixir.StatusDashboard do
       session_id
     end
   end
+
+  defp compact_issue_label(entry) when is_map(entry) do
+    project_key = present_string(Map.get(entry, :project_key))
+    issue_identifier = present_string(Map.get(entry, :issue_identifier))
+    identifier = present_string(Map.get(entry, :identifier))
+    issue_id = present_string(Map.get(entry, :issue_id))
+
+    cond do
+      project_key && issue_identifier -> "#{project_key}/#{issue_identifier}"
+      project_key && identifier -> "#{project_key}/#{identifier}"
+      issue_identifier -> issue_identifier
+      identifier -> identifier
+      issue_id -> issue_id
+      true -> "unknown"
+    end
+  end
+
+  defp compact_issue_label(_entry), do: "unknown"
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
 
   defp group_thousands(value) when is_binary(value) do
     sign = if String.starts_with?(value, "-"), do: "-", else: ""

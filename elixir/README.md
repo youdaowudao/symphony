@@ -27,7 +27,7 @@
 ## 使用方法
 
 1. 确保你的 codebase 已经设置为适合 agents 工作：参见 [Harness engineering](https://openai.com/index/harness-engineering/)。
-2. 在 Linear 中通过 Settings → Security & access → Personal API keys 获取一个新的 personal token，并将其设置为 `LINEAR_API_KEY` 环境变量。
+2. 在 Linear 中通过 Settings → Security & access → Personal API keys 获取一个新的 personal token，把它写入 `project_registry.yaml` 的 `linear_token_relative_path` 指向的文件中。该路径必须是相对 `HOME` 的相对路径。
 3. 将此目录中的 `WORKFLOW.md` 复制到你的 repo。
 4. 可选：将 `commit`、`push`、`pull`、`land` 和 `linear` skills 复制到你的 repo。
    - `linear` skill 需要 Symphony 的 `linear_graphql` app-server tool，用于执行原始 Linear GraphQL 操作，例如 comment editing 或 upload flows。
@@ -47,6 +47,39 @@ mise exec -- elixir --version
 
 ## 运行
 
+开发阶段默认使用源码启动，不要默认复用旧的 `bin/symphony` 构建产物。
+
+### 开发阶段源码启动
+
+当你在本地修改 `elixir/lib/`、`elixir/priv/static/`、LiveView 模板或其他运行时代码时，默认用下面的源码启动方式：
+
+```bash
+cd /home/ss/projects/symphony/elixir
+./bin/dev-source 4000
+```
+
+说明：
+
+- 这条命令直接从当前源码启动，会使用 `_build` 中的最新编译结果。
+- 适合开发阶段反复修改后立即重启验证。
+- 启动前会先从 `project_registry.yaml` 的 `linear_token_relative_path` 读取 token，基准目录固定为 `HOME`。
+- 如果 token 路径缺失、文件不存在、不可读或内容为空，启动会直接退出，不会继续进入 runtime poll。
+
+### 什么时候需要重建 `bin/symphony`
+
+只有在你明确要验证或交付 `./bin/symphony` 这个打包入口时，才先重建：
+
+```bash
+cd /home/ss/projects/symphony/elixir
+mise exec -- mix escript.build
+./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails --port 4000 ./WORKFLOW.md
+```
+
+说明：
+
+- `./bin/symphony` 是构建产物，不会自动代表你刚改过的源码。
+- 如果你改了源码却继续直接跑旧的 `./bin/symphony`，就可能打开旧页面或旧行为。
+
 ```bash
 git clone https://github.com/openai/symphony
 cd symphony/elixir
@@ -54,7 +87,7 @@ mise trust
 mise install
 mise exec -- mix setup
 mise exec -- mix build
-mise exec -- ./bin/symphony ./WORKFLOW.md
+mise exec -- ./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails ./WORKFLOW.md
 ```
 
 ## 配置
@@ -62,7 +95,7 @@ mise exec -- ./bin/symphony ./WORKFLOW.md
 启动服务时，可以向 `./bin/symphony` 传入自定义 workflow 文件路径：
 
 ```bash
-./bin/symphony /path/to/custom/WORKFLOW.md
+./bin/symphony --i-understand-that-this-will-be-running-without-the-usual-guardrails /path/to/custom/WORKFLOW.md
 ```
 
 如果未传入路径，Symphony 默认使用 `./WORKFLOW.md`。
@@ -87,7 +120,7 @@ hooks:
   after_create: |
     git clone git@github.com:your-org/your-repo.git .
 agent:
-  max_concurrent_agents: 10
+  max_concurrent_agents: 20
   max_turns: 20
 codex:
   command: codex app-server
@@ -112,13 +145,11 @@ Title: {{ issue.title }} Body: {{ issue.description }}
 - 如果 Markdown body 为空，Symphony 会使用包含 issue identifier、title 和 body 的默认 prompt template。
 - 使用 `hooks.after_create` 引导一个全新的 workspace。对于 Git-backed repo，你可以在那里运行 `git clone ... .`，以及你需要的任何其他 setup commands。
 - 如果某个 hook 需要在 freshly cloned workspace 内执行 `mise exec`，请在后续其他 hooks 调用 `mise` 之前，先在 `hooks.after_create` 中 trust repo config 并获取 project dependencies。
-- 当 `tracker.api_key` 未设置或值为 `$LINEAR_API_KEY` 时，会从 `LINEAR_API_KEY` 读取。
+- Linear token 不再从 `WORKFLOW.md` 的 `tracker.api_key` 或外部 `LINEAR_API_KEY` 读取。启动前只会读取 `project_registry.yaml` 中的 `linear_token_relative_path`，并把该文件内容注入为运行期唯一 token 来源。
 - 对于 path values，`~` 会展开为 home directory。
 - 对于 env-backed path values，请使用 `$VAR`。`workspace.root` 会先解析 `$VAR` 再处理 path，而 `codex.command` 保持为 shell command string，其中任何 `$VAR` expansion 都会发生在 launched shell 中。
 
 ```yaml
-tracker:
-  api_key: $LINEAR_API_KEY
 workspace:
   root: $SYMPHONY_WORKSPACE_ROOT
 hooks:
@@ -158,7 +189,6 @@ make all
 
 ```bash
 cd elixir
-export LINEAR_API_KEY=...
 make e2e
 ```
 

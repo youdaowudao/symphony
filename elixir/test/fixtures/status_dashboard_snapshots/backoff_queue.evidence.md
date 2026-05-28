@@ -1,17 +1,18 @@
 ```text
 ╭─ SYMPHONY STATUS
-│ Agents: 1/10
+│ Agents: 1/20
 │ Throughput: 15 tps
 │ Runtime: 45m 0s
 │ Tokens: in 18,000 | out 2,200 | total 20,200
 │ Rate Limits: gpt-5 | primary 0/20,000 reset 95s | secondary 0/60 reset 45s | credits none
-│ Project: https://linear.app/project/project/issues
+│ Projects: enabled 0 / active 0
+│ Tracker: n/a
 │ Next refresh: n/a
 ├─ Running
 │
-│   ID       STAGE          PID      AGE / TURN   TOKENS     SESSION
-│   ───────────────────────────────────────────────────────────────────────
-│ ● MT-638   running        4242     20m 25s / 7      14,200 thre...567890
+│   ID             STAGE          PID      AGE / TURN   TOKENS     SESSION
+│   ─────────────────────────────────────────────────────────────────────────────
+│ ● MT-638         running        4242     20m 25s / 7      14,200 thre...567890
 │   latest event: agent message streaming: waiting on rate-limit backoff window                     · 5 分钟前更新
 │
 ├─ Backoff queue

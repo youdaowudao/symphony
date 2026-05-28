@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+PORT="${1:-4000}"
+
+export SYMPHONY_DEV_SOURCE_PORT="$PORT"
+
+exec mise exec -- mix run --no-halt --no-start -e 'case SymphonyElixir.CLI.evaluate_dev_source(System.get_env("SYMPHONY_DEV_SOURCE_PORT", "4000")) do :ok -> :ok; {:error, message} -> IO.puts(:stderr, message); System.halt(1) end'

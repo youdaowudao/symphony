@@ -5,7 +5,8 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   @behaviour SymphonyElixir.Tracker
 
-  alias SymphonyElixir.Linear.Client
+  alias SymphonyElixir.{Config, Linear.Client, ProjectRegistry}
+  alias SymphonyElixir.Tracker.ProjectAggregation
 
   @create_comment_mutation """
   mutation SymphonyCreateComment($issueId: String!, $body: String!) {
@@ -40,8 +41,29 @@ defmodule SymphonyElixir.Linear.Adapter do
   @spec fetch_candidate_issues() :: {:ok, [term()]} | {:error, term()}
   def fetch_candidate_issues, do: client_module().fetch_candidate_issues()
 
+  @spec fetch_project_candidates() :: {:ok, term()} | {:error, term()}
+  def fetch_project_candidates do
+    with {:ok, project_entries} <- project_registry_module().normalized_entries() do
+      project_aggregation_module().aggregate(project_entries, fn project_key ->
+        client_module().fetch_candidate_issues_for_project(
+          project_key,
+          Config.settings!().tracker.active_states
+        )
+      end)
+    end
+  end
+
   @spec fetch_issues_by_states([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issues_by_states(states), do: client_module().fetch_issues_by_states(states)
+
+  @spec fetch_project_issues_by_states([String.t()]) :: {:ok, term()} | {:error, term()}
+  def fetch_project_issues_by_states(states) do
+    with {:ok, project_entries} <- project_registry_module().normalized_entries() do
+      project_aggregation_module().aggregate(project_entries, fn project_key ->
+        client_module().fetch_issues_by_states_for_project(project_key, states)
+      end)
+    end
+  end
 
   @spec fetch_issue_states_by_ids([String.t()]) :: {:ok, [term()]} | {:error, term()}
   def fetch_issue_states_by_ids(issue_ids), do: client_module().fetch_issue_states_by_ids(issue_ids)
@@ -75,6 +97,14 @@ defmodule SymphonyElixir.Linear.Adapter do
 
   defp client_module do
     Application.get_env(:symphony_elixir, :linear_client_module, Client)
+  end
+
+  defp project_registry_module do
+    Application.get_env(:symphony_elixir, :project_registry_module, ProjectRegistry)
+  end
+
+  defp project_aggregation_module do
+    Application.get_env(:symphony_elixir, :project_aggregation_module, ProjectAggregation)
   end
 
   defp resolve_state_id(issue_id, state_name) do
