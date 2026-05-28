@@ -14,6 +14,7 @@ defmodule SymphonyElixir.CLI do
           set_workflow_file_path: (String.t() -> :ok | {:error, term()}),
           set_logs_root: (String.t() -> :ok | {:error, term()}),
           set_server_port_override: (non_neg_integer() | nil -> :ok | {:error, term()}),
+          bootstrap_linear_token: (String.t() -> :ok | {:error, String.t()}),
           ensure_all_started: (-> ensure_started_result())
         }
 
@@ -27,6 +28,18 @@ defmodule SymphonyElixir.CLI do
         IO.puts(:stderr, message)
         System.halt(1)
     end
+  end
+
+  @spec evaluate_dev_source(String.t(), deps()) :: :ok | {:error, String.t()}
+  def evaluate_dev_source(port_arg, deps \\ runtime_deps()) when is_binary(port_arg) do
+    evaluate(
+      [
+        "--i-understand-that-this-will-be-running-without-the-usual-guardrails",
+        "--port",
+        port_arg
+      ],
+      deps
+    )
   end
 
   @spec evaluate([String.t()], deps()) :: :ok | {:error, String.t()}
@@ -58,9 +71,12 @@ defmodule SymphonyElixir.CLI do
     if deps.file_regular?.(expanded_path) do
       :ok = deps.set_workflow_file_path.(expanded_path)
 
-      case deps.ensure_all_started.() do
-        {:ok, _started_apps} ->
-          :ok
+      with :ok <- maybe_bootstrap_linear_token(expanded_path, deps),
+           {:ok, _started_apps} <- deps.ensure_all_started.() do
+        :ok
+      else
+        {:error, message} when is_binary(message) ->
+          {:error, message}
 
         {:error, reason} ->
           {:error, "Failed to start Symphony with workflow #{expanded_path}: #{inspect(reason)}"}
@@ -82,8 +98,13 @@ defmodule SymphonyElixir.CLI do
       set_workflow_file_path: &SymphonyElixir.Workflow.set_workflow_file_path/1,
       set_logs_root: &set_logs_root/1,
       set_server_port_override: &set_server_port_override/1,
+      bootstrap_linear_token: &SymphonyElixir.LinearTokenBootstrap.bootstrap_if_needed/1,
       ensure_all_started: fn -> Application.ensure_all_started(:symphony_elixir) end
     }
+  end
+
+  defp maybe_bootstrap_linear_token(workflow_path, deps) do
+    deps.bootstrap_linear_token.(workflow_path)
   end
 
   defp maybe_set_logs_root(opts, deps) do

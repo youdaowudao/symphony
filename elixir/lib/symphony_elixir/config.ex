@@ -31,7 +31,9 @@ defmodule SymphonyElixir.Config do
   def settings do
     case Workflow.current() do
       {:ok, %{config: config}} when is_map(config) ->
-        Schema.parse(config)
+        with {:ok, settings} <- Schema.parse(config) do
+          {:ok, inject_runtime_linear_token(settings)}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -144,6 +146,20 @@ defmodule SymphonyElixir.Config do
       :missing -> {:error, :missing_linear_project_slug}
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  defp inject_runtime_linear_token(%Schema{tracker: tracker} = settings) do
+    runtime_token =
+      case Application.get_env(:symphony_elixir, :linear_api_token) do
+        token when is_binary(token) ->
+          trimmed = String.trim(token)
+          if trimmed == "", do: nil, else: trimmed
+
+        _ ->
+          nil
+      end
+
+    %{settings | tracker: %{tracker | api_key: runtime_token}}
   end
 
   defp format_config_error(reason) do

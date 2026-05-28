@@ -36,7 +36,8 @@ erl_crash.dump
 # IDE folders.
 .idea/
 .vscode/
-/bin/
+/bin/*
+!/bin/dev-source
 
 # Local environment and auth artifacts.
 .env

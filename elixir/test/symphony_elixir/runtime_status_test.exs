@@ -3,6 +3,14 @@ defmodule SymphonyElixir.RuntimeStatusTest do
 
   alias SymphonyElixir.RuntimeStatus
 
+  test "classify/1 uses the current time for freshness fallback" do
+    assert RuntimeStatus.classify(runtime_entry(~U[2099-05-24 21:39:38Z], :notification, turn_started_message())) ==
+             :running
+
+    assert RuntimeStatus.classify(runtime_entry(~U[2000-05-24 21:39:38Z], :notification, turn_started_message())) ==
+             :stale
+  end
+
   test "returns unknown for non-map entries" do
     assert RuntimeStatus.classify(nil, ~U[2026-05-24 21:39:38Z]) == :unknown
     assert RuntimeStatus.classify("not an entry", ~U[2026-05-24 21:39:38Z]) == :unknown

@@ -4,7 +4,7 @@ defmodule SymphonyElixir.Workspace do
   """
 
   require Logger
-  alias SymphonyElixir.{Config, PathSafety, SSH}
+  alias SymphonyElixir.{Config, PathSafety, SSH, Workflow}
   alias SymphonyElixir.Workspace.{DispatchContext, OwnerFile}
 
   @remote_workspace_marker "__SYMPHONY_WORKSPACE__"
@@ -419,12 +419,13 @@ defmodule SymphonyElixir.Workspace do
 
   defp run_hook(command, workspace, issue_context, hook_name, nil) do
     timeout_ms = Config.settings!().hooks.timeout_ms
+    hook_script = wrap_hook_command(command, nil)
 
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=local")
 
     task =
       Task.async(fn ->
-        System.cmd("sh", ["-lc", command], cd: workspace, stderr_to_stdout: true)
+        System.cmd("sh", ["-lc", hook_script], cd: workspace, stderr_to_stdout: true)
       end)
 
     case Task.yield(task, timeout_ms) do
@@ -443,9 +444,19 @@ defmodule SymphonyElixir.Workspace do
   defp run_hook(command, workspace, issue_context, hook_name, worker_host) when is_binary(worker_host) do
     timeout_ms = Config.settings!().hooks.timeout_ms
 
+    hook_script =
+      [
+        hook_environment_script(worker_host),
+        remote_shell_assign("workspace", workspace),
+        "cd \"$workspace\"",
+        command
+      ]
+      |> Enum.reject(&(&1 in [nil, ""]))
+      |> Enum.join("\n")
+
     Logger.info("Running workspace hook hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} worker_host=#{worker_host}")
 
-    case run_remote_command(worker_host, "cd #{shell_escape(workspace)} && #{command}", timeout_ms) do
+    case run_remote_command(worker_host, hook_script, timeout_ms) do
       {:ok, cmd_result} ->
         handle_hook_command_result(cmd_result, workspace, issue_context, hook_name)
 
@@ -467,6 +478,107 @@ defmodule SymphonyElixir.Workspace do
     Logger.warning("Workspace hook failed hook=#{hook_name} #{issue_log_context(issue_context)} workspace=#{workspace} status=#{status} output=#{inspect(sanitized_output)}")
 
     {:error, {:workspace_hook_failed, hook_name, status, output}}
+  end
+
+  defp wrap_hook_command(command, worker_host) when is_binary(command) do
+    [
+      hook_environment_script(worker_host),
+      command
+    ]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join("\n")
+  end
+
+  defp hook_environment_script(nil) do
+    case workflow_repo_url() do
+      nil ->
+        "unset SYMPHONY_REPO_URL"
+
+      repo_url ->
+        "export SYMPHONY_REPO_URL=#{shell_escape(repo_url)}"
+    end
+  end
+
+  defp hook_environment_script(worker_host) when is_binary(worker_host) do
+    case workflow_repo_origin_url() do
+      nil ->
+        "unset SYMPHONY_REPO_URL"
+
+      repo_url ->
+        "export SYMPHONY_REPO_URL=#{shell_escape(repo_url)}"
+    end
+  end
+
+  defp workflow_repo_url do
+    workflow_repo_origin_url() || workflow_repo_root()
+  end
+
+  defp workflow_repo_origin_url do
+    repo_source_candidates()
+    |> Enum.find_value(&git_remote_origin_url/1)
+  end
+
+  defp workflow_repo_root do
+    repo_source_candidates()
+    |> Enum.find_value(&git_repo_root/1)
+  end
+
+  defp repo_source_candidates do
+    [
+      Workflow.workflow_file_path()
+      |> Path.expand()
+      |> Path.dirname(),
+      current_working_directory()
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
+  defp current_working_directory do
+    case File.cwd() do
+      {:ok, cwd} -> cwd
+      {:error, _reason} -> nil
+    end
+  end
+
+  defp git_remote_origin_url(directory) when is_binary(directory) do
+    case git_command_output(directory, ["remote", "get-url", "origin"]) do
+      {:ok, repo_url} -> repo_url
+      :error -> nil
+    end
+  end
+
+  defp git_repo_root(directory) when is_binary(directory) do
+    case git_command_output(directory, ["rev-parse", "--show-toplevel"]) do
+      {:ok, repo_root} -> repo_root
+      :error -> nil
+    end
+  end
+
+  defp git_command_output(directory, args) when is_binary(directory) and is_list(args) do
+    workflow_dir =
+      directory
+
+    try do
+      case System.cmd("git", ["-C", workflow_dir | args], stderr_to_stdout: true) do
+        {output, 0} ->
+          output
+          |> String.trim()
+          |> case do
+            "" -> :error
+            value -> {:ok, value}
+          end
+
+        {_output, _status} ->
+          :error
+      end
+    rescue
+      ArgumentError ->
+        :error
+
+      ErlangError ->
+        :error
+    end
   end
 
   defp sanitize_hook_output_for_log(output, max_bytes \\ 2_048) do

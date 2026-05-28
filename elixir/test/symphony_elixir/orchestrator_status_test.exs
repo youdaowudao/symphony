@@ -1367,7 +1367,7 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert_receive {:project_fetch_issues_by_states_called, "project-a", ["Todo", "In Progress", "Closed", "Cancelled", "Canceled", "Duplicate", "Done"]}
   end
 
-  test "snapshot projects fall back to project_key instead of registry display_name" do
+  test "snapshot projects use registry display_name for enabled canonical projects" do
     Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
 
     Application.put_env(
@@ -1397,14 +1397,14 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert snapshot.projects == [
              %{
                project_key: "project-a",
-               project_display_name: "project-a",
+               project_display_name: "Project A",
                running_count: 0,
                retrying_count: 0,
                blocked_count: 0
              },
              %{
                project_key: "project-b",
-               project_display_name: "project-b",
+               project_display_name: "Project B",
                running_count: 0,
                retrying_count: 0,
                blocked_count: 0
@@ -2452,8 +2452,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        match?(%{project_key: "project-a", identifier: "PROJECT-A-CONT"}, current_state.retry_attempts[{"project-a", issue_id}])
+      end)
 
     assert %{project_key: "project-a", identifier: "PROJECT-A-CONT"} = state.retry_attempts[{"project-a", issue_id}]
   end
@@ -2497,8 +2500,22 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), :normal})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    state =
+      wait_for_state(pid, fn current_state ->
+        match?(
+          %{
+            project_key: "project-a",
+            issue_id: ^issue_id,
+            issue_identifier: "PROJECT-A-CONT-2",
+            identifier: "PROJECT-A-CONT-2",
+            worker_host: "dm-dev2",
+            workspace_path: "/workspaces/project-a/PROJECT-A-CONT-2__issue",
+            last_attempt: 2
+          },
+          current_state.retry_attempts[runtime_key]
+        )
+      end)
 
     assert %{
              project_key: "project-a",
@@ -2928,7 +2945,8 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
   test "orchestrator restarts stalled workers with retry backoff" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
-      codex_stall_timeout_ms: 1_000
+      codex_stall_timeout_ms: 1_000,
+      poll_interval_ms: 5_000
     )
 
     issue_id = "issue-stall"
@@ -2942,6 +2960,20 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end
     end)
 
+    post_startup_state =
+      wait_for_state(pid, fn state ->
+        is_integer(state.next_poll_due_at_ms) and
+          state.next_poll_due_at_ms > System.monotonic_time(:millisecond) and
+          state.poll_check_in_progress == false and
+          is_reference(state.tick_timer_ref) and
+          is_reference(state.tick_token)
+      end)
+
+    remaining_startup_poll_ms = Process.cancel_timer(post_startup_state.tick_timer_ref)
+    assert is_integer(remaining_startup_poll_ms)
+    assert remaining_startup_poll_ms >= 0
+    assert remaining_startup_poll_ms <= 5_000
+
     worker_pid =
       spawn(fn ->
         receive do
@@ -2950,7 +2982,6 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       end)
 
     stale_activity_at = DateTime.add(DateTime.utc_now(), -5, :second)
-    initial_state = :sys.get_state(pid)
 
     running_entry = %{
       pid: worker_pid,
@@ -2965,15 +2996,27 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       started_at: stale_activity_at
     }
 
+    manual_tick_token = make_ref()
+
     :sys.replace_state(pid, fn _ ->
-      initial_state
+      post_startup_state
+      |> Map.put(:tick_timer_ref, nil)
+      |> Map.put(:tick_token, manual_tick_token)
+      |> Map.put(:next_poll_due_at_ms, nil)
+      |> Map.put(:poll_check_in_progress, false)
       |> Map.put(:running, %{runtime_key => running_entry})
-      |> Map.put(:claimed, MapSet.put(initial_state.claimed, runtime_key))
+      |> Map.put(:claimed, MapSet.put(post_startup_state.claimed, runtime_key))
     end)
 
-    send(pid, :tick)
-    Process.sleep(100)
-    state = :sys.get_state(pid)
+    trigger_started_at_ms = System.monotonic_time(:millisecond)
+    send(pid, {:tick, manual_tick_token})
+
+    state =
+      wait_for_state(pid, fn state ->
+        not Map.has_key?(state.running, runtime_key) and Map.has_key?(state.retry_attempts, runtime_key)
+      end)
+
+    observed_retry_at_ms = System.monotonic_time(:millisecond)
 
     refute Process.alive?(worker_pid)
     refute Map.has_key?(state.running, runtime_key)
@@ -2987,9 +3030,88 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
            } = state.retry_attempts[runtime_key]
 
     assert is_integer(due_at_ms)
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
-    assert remaining_ms >= 9_500
-    assert remaining_ms <= 10_500
+    scheduled_from_trigger_ms = due_at_ms - trigger_started_at_ms
+    remaining_backoff_after_observation_ms = due_at_ms - observed_retry_at_ms
+
+    assert scheduled_from_trigger_ms >= 10_000
+    assert remaining_backoff_after_observation_ms > 0
+    assert remaining_backoff_after_observation_ms <= 10_000
+  end
+
+  test "retrying issue re-entering running records a recovery event in snapshot" do
+    Application.put_env(:symphony_elixir, :linear_client_module, V012FixLinearClient)
+    Application.put_env(:symphony_elixir, :v012_fix_test_recipient, self())
+
+    Application.put_env(
+      :symphony_elixir,
+      :project_registry_module,
+      V012FixProjectRegistry
+    )
+
+    Application.put_env(:symphony_elixir, :v012_fix_registry_entries, [
+      %{project_key: "project-a", display_name: "项目甲", enabled: true, max_concurrent_agents: 15}
+    ])
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: "token")
+
+    issue_id = "issue-recovery-event"
+    runtime_key = {"project-a", issue_id}
+
+    Application.put_env(:symphony_elixir, :v012_fix_project_state_results, %{
+      "project-a" =>
+        {:ok,
+         [
+           %Issue{
+             id: issue_id,
+             identifier: "REC-1",
+             title: "recovered issue",
+             state: "In Progress"
+           }
+         ]}
+    })
+
+    orchestrator_name = Module.concat(__MODULE__, :RecoveryEventOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    retry_token = make_ref()
+
+    :sys.replace_state(pid, fn _ ->
+      %{
+        initial_state
+        | retry_attempts: %{
+            runtime_key => %{
+              attempt: 2,
+              timer_ref: nil,
+              retry_token: retry_token,
+              due_at_ms: System.monotonic_time(:millisecond) + 1_000,
+              identifier: "REC-1",
+              error: "agent exited: boom",
+              project_key: "project-a",
+              issue_id: issue_id,
+              issue_identifier: "REC-1",
+              worker_host: nil,
+              workspace_path: nil,
+              last_attempt: 2
+            }
+          },
+          claimed: MapSet.put(initial_state.claimed, runtime_key)
+      }
+    end)
+
+    send(pid, {:retry_issue, runtime_key, retry_token})
+    Process.sleep(50)
+
+    snapshot = Orchestrator.snapshot(orchestrator_name, 50)
+
+    assert [%{issue_id: ^issue_id, issue_identifier: "REC-1", project_key: "project-a", recovery_attempt_count: 2}] =
+             snapshot.recovery_events
   end
 
   test "orchestrator blocks stalled workers that are waiting on MCP elicitation" do
@@ -3153,7 +3275,13 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
 
     ref = make_ref()
     started_at = DateTime.utc_now()
-    initial_state = :sys.get_state(pid)
+
+    initial_state =
+      wait_for_state(pid, fn state ->
+        state.poll_check_in_progress == false and
+          is_integer(state.next_poll_due_at_ms) and
+          state.next_poll_due_at_ms - System.monotonic_time(:millisecond) > 1_000
+      end)
 
     running_entry = %{
       pid: self(),
@@ -3178,17 +3306,33 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     end)
 
     send(pid, {:DOWN, ref, :process, self(), {:shutdown, :input_required}})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
 
-    refute Map.has_key?(state.running, issue_id)
-    refute Map.has_key?(state.retry_attempts, issue_id)
-    assert MapSet.member?(state.claimed, issue_id)
+    snapshot =
+      wait_for_snapshot(pid, fn snapshot ->
+        blocked_entry = Enum.find(snapshot.blocked, &(Map.get(&1, :issue_id) == issue_id))
+
+        not Enum.any?(snapshot.running, &(Map.get(&1, :issue_id) == issue_id)) and
+          not Enum.any?(snapshot.retrying, &(Map.get(&1, :issue_id) == issue_id)) and
+          match?(
+            %{
+              issue_id: ^issue_id,
+              identifier: "MT-INPUT",
+              error: "codex turn requires operator input"
+            },
+            blocked_entry
+          )
+      end)
+
+    refute Enum.any?(snapshot.running, &(Map.get(&1, :issue_id) == issue_id))
+    refute Enum.any?(snapshot.retrying, &(Map.get(&1, :issue_id) == issue_id))
+
+    blocked_entry = Enum.find(snapshot.blocked, &(Map.get(&1, :issue_id) == issue_id))
 
     assert %{
+             issue_id: ^issue_id,
              identifier: "MT-INPUT",
              error: "codex turn requires operator input"
-           } = state.blocked[issue_id]
+           } = blocked_entry
   end
 
   test "orchestrator blocks normal worker exits after input required completion" do

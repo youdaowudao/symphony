@@ -3,7 +3,7 @@ defmodule SymphonyElixirWeb.Presenter do
   Shared projections for the observability API and dashboard.
   """
 
-  alias SymphonyElixir.{Orchestrator, RuntimeStatus, StatusDashboard}
+  alias SymphonyElixir.{Orchestrator, ProjectRegistry, RuntimeStatus, StatusDashboard}
 
   @spec state_payload(GenServer.name(), timeout()) :: map()
   def state_payload(orchestrator, snapshot_timeout_ms) do
@@ -12,23 +12,36 @@ defmodule SymphonyElixirWeb.Presenter do
 
     case Orchestrator.snapshot(orchestrator, snapshot_timeout_ms) do
       %{} = snapshot ->
-        running = Enum.map(snapshot.running, &running_entry_payload(&1, generated_at_datetime))
-        retrying = Enum.map(snapshot.retrying, &retry_entry_payload/1)
-        blocked = Enum.map(Map.get(snapshot, :blocked, []), &blocked_entry_payload(&1, generated_at_datetime))
+        project_display_names = project_display_names()
+        running = Enum.map(snapshot.running, &running_entry_payload(with_project_display_name(&1, project_display_names), generated_at_datetime))
+        retrying = Enum.map(snapshot.retrying, &retry_entry_payload(with_project_display_name(&1, project_display_names)))
+
+        blocked =
+          Enum.map(
+            Map.get(snapshot, :blocked, []),
+            &blocked_entry_payload(with_project_display_name(&1, project_display_names), generated_at_datetime)
+          )
+
+        stale_count = Enum.count(running, &(&1.runtime_status == "stale"))
+        pending_count = pending_count(snapshot, generated_at_datetime)
 
         %{
           generated_at: generated_at,
           counts: %{
             running: length(snapshot.running),
             retrying: length(snapshot.retrying),
-            blocked: length(Map.get(snapshot, :blocked, []))
+            blocked: length(Map.get(snapshot, :blocked, [])),
+            stale: stale_count,
+            pending: pending_count
           },
-          projects: projects_payload(Map.get(snapshot, :projects, []), running, retrying, blocked),
+          projects: projects_payload(Map.get(snapshot, :projects, []), running, retrying, blocked, project_display_names),
           running: running,
           retrying: retrying,
           blocked: blocked,
+          recovery_events: recovery_events_payload(Map.get(snapshot, :recovery_events, []), project_display_names),
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          polling: Map.get(snapshot, :polling, %{})
         }
 
       :timeout ->
@@ -51,17 +64,13 @@ defmodule SymphonyElixirWeb.Presenter do
             {:error, :issue_not_found}
 
           :project_scope_required ->
-            {:error,
-             {:project_scope_required,
-              "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
+            {:error, {:project_scope_required, "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
 
           [{running, retry, blocked}] ->
             {:ok, issue_payload_body(issue_identifier, running, retry, blocked, generated_at_datetime)}
 
           _matches ->
-            {:error,
-             {:project_scope_required,
-              "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
+            {:error, {:project_scope_required, "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"}}
         end
 
       _ ->
@@ -98,6 +107,14 @@ defmodule SymphonyElixirWeb.Presenter do
 
       payload ->
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+    end
+  end
+
+  @spec clear_recovery_events(GenServer.name()) :: :ok | {:error, :unavailable}
+  def clear_recovery_events(orchestrator) do
+    case Orchestrator.clear_recovery_events(orchestrator) do
+      :ok -> :ok
+      _ -> {:error, :unavailable}
     end
   end
 
@@ -170,10 +187,12 @@ defmodule SymphonyElixirWeb.Presenter do
       runtime_status: runtime_status(entry, now),
       worker_host: Map.get(entry, :worker_host),
       workspace_path: Map.get(entry, :workspace_path),
+      attempt: normalize_attempt(Map.get(entry, :attempt, Map.get(entry, :retry_attempt))),
       session_id: entry.session_id,
       turn_count: Map.get(entry, :turn_count, 0),
       last_event: entry.last_codex_event,
       last_message: summarize_message(entry.last_codex_message),
+      summary_text: stable_summary_text(entry),
       started_at: iso8601(entry.started_at),
       last_event_at: iso8601(entry.last_codex_timestamp),
       tokens: %{
@@ -291,17 +310,85 @@ defmodule SymphonyElixirWeb.Presenter do
   defp summarize_message(nil), do: nil
   defp summarize_message(message), do: StatusDashboard.humanize_codex_message(message)
 
-  defp project_summary_payload(entry) do
+  defp stable_summary_text(entry) when is_map(entry) do
+    message = Map.get(entry, :last_codex_message)
+    fallback = summarize_message(message)
+    streaming_summary = stable_streaming_summary(message)
+
+    cond do
+      streaming_summary != nil ->
+        streaming_summary
+
+      is_binary(fallback) and String.trim(fallback) != "" ->
+        fallback
+
+      true ->
+        Map.get(entry, :last_codex_event) |> stable_event_label()
+    end
+  end
+
+  defp stable_streaming_summary(%{message: message}), do: stable_streaming_summary(message)
+
+  defp stable_streaming_summary(message) when is_map(message) do
+    method =
+      map_fetch(message, ["method"]) ||
+        map_fetch(message, [:method]) ||
+        map_fetch(message, ["payload", "method"]) ||
+        map_fetch(message, [:payload, :method])
+
+    cond do
+      method in ["item/agentMessage/delta", "codex/event/item/agentMessage/delta"] ->
+        "消息输出中"
+
+      method in ["item/reasoning/summaryTextDelta", "item/reasoning/textDelta", "codex/event/item/reasoning/textDelta"] ->
+        "思考摘要生成中"
+
+      method in ["item/commandExecution/outputDelta", "item/fileChange/outputDelta"] ->
+        "命令输出更新中"
+
+      true ->
+        nil
+    end
+  end
+
+  defp stable_streaming_summary(_message), do: nil
+
+  defp stable_event_label(nil), do: "n/a"
+  defp stable_event_label(:notification), do: "最近事件已更新"
+  defp stable_event_label(:session_started), do: "session 已启动"
+  defp stable_event_label(:turn_input_required), do: "等待人工输入"
+  defp stable_event_label(:approval_required), do: "等待审批"
+  defp stable_event_label(event) when is_atom(event), do: event |> Atom.to_string() |> String.replace("_", " ")
+  defp stable_event_label(event) when is_binary(event) and event != "", do: event
+  defp stable_event_label(_event), do: "n/a"
+
+  defp map_fetch(data, [key]) when is_map(data), do: Map.get(data, key)
+
+  defp map_fetch(data, [key | rest]) when is_map(data) do
+    case Map.get(data, key) do
+      nil -> nil
+      value -> map_fetch(value, rest)
+    end
+  end
+
+  defp map_fetch(_data, _path), do: nil
+
+  defp recovery_events_payload(recovery_events, project_display_names) when is_list(recovery_events),
+    do: Enum.map(recovery_events, &recovery_event_payload(&1, project_display_names))
+
+  defp project_summary_payload(entry, project_display_names) do
+    project_key = entry.project_key
+
     %{
-      project_key: entry.project_key,
-      project_display_name: Map.get(entry, :project_display_name) || entry.project_key,
+      project_key: project_key,
+      project_display_name: display_name_for_project(project_key, Map.get(entry, :project_display_name), project_display_names),
       running_count: Map.get(entry, :running_count, 0),
       retrying_count: Map.get(entry, :retrying_count, 0),
       blocked_count: Map.get(entry, :blocked_count, 0)
     }
   end
 
-  defp projects_payload([], running, retrying, blocked) do
+  defp projects_payload([], running, retrying, blocked, _project_display_names) do
     project_keys =
       (running ++ retrying ++ blocked)
       |> Enum.map(&entry_project_key/1)
@@ -311,7 +398,13 @@ defmodule SymphonyElixirWeb.Presenter do
     Enum.map(project_keys, fn project_key ->
       %{
         project_key: project_key,
-        project_display_name: project_key,
+        project_display_name:
+          project_display_name_from_entries(
+            Enum.find(running, &(entry_project_key(&1) == project_key)),
+            Enum.find(retrying, &(entry_project_key(&1) == project_key)),
+            Enum.find(blocked, &(entry_project_key(&1) == project_key)),
+            project_key
+          ),
         running_count: Enum.count(running, &(entry_project_key(&1) == project_key)),
         retrying_count: Enum.count(retrying, &(entry_project_key(&1) == project_key)),
         blocked_count: Enum.count(blocked, &(entry_project_key(&1) == project_key))
@@ -319,9 +412,9 @@ defmodule SymphonyElixirWeb.Presenter do
     end)
   end
 
-  defp projects_payload(projects, running, retrying, blocked) when is_list(projects) do
+  defp projects_payload(projects, running, retrying, blocked, project_display_names) when is_list(projects) do
     Enum.map(projects, fn entry ->
-      payload = project_summary_payload(entry)
+      payload = project_summary_payload(entry, project_display_names)
       project_key = payload.project_key
 
       %{
@@ -339,6 +432,87 @@ defmodule SymphonyElixirWeb.Presenter do
 
   defp entry_project_display_name(entry) when is_map(entry) do
     Map.get(entry, :project_display_name) || Map.get(entry, :project_key)
+  end
+
+  defp with_project_display_name(entry, project_display_names) when is_map(entry) do
+    Map.put(
+      entry,
+      :project_display_name,
+      display_name_for_project(
+        Map.get(entry, :project_key),
+        Map.get(entry, :project_display_name),
+        project_display_names
+      )
+    )
+  end
+
+  defp recovery_event_payload(entry, project_display_names) when is_map(entry) do
+    %{
+      project_key: Map.get(entry, :project_key),
+      project_display_name:
+        display_name_for_project(
+          Map.get(entry, :project_key),
+          Map.get(entry, :project_display_name),
+          project_display_names
+        ),
+      issue_id: Map.get(entry, :issue_id),
+      issue_identifier: Map.get(entry, :issue_identifier) || Map.get(entry, :identifier),
+      recovery_attempt_count: normalize_attempt(Map.get(entry, :recovery_attempt_count, Map.get(entry, :attempt))),
+      last_event_at: iso8601(Map.get(entry, :last_event_at, Map.get(entry, :last_codex_timestamp))),
+      last_message: summarize_message(Map.get(entry, :last_message, Map.get(entry, :last_codex_message))),
+      session_id: Map.get(entry, :session_id)
+    }
+  end
+
+  defp display_name_for_project(project_key, current_display_name, project_display_names) do
+    Map.get(project_display_names, project_key) || current_display_name || project_key
+  end
+
+  defp pending_count(snapshot, now) do
+    [
+      Map.get(snapshot, :blocked, []),
+      Map.get(snapshot, :retrying, []),
+      snapshot.running
+      |> Enum.filter(&(runtime_status(&1, now) == "stale"))
+    ]
+    |> List.flatten()
+    |> Enum.map(&pending_entry_key/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> length()
+  end
+
+  defp pending_entry_key(entry) when is_map(entry) do
+    Map.get(entry, :issue_id) || Map.get(entry, :identifier) || Map.get(entry, :issue_identifier)
+  end
+
+  defp normalize_attempt(attempt) when is_integer(attempt) and attempt >= 0, do: attempt
+  defp normalize_attempt(_attempt), do: 0
+
+  defp project_display_names do
+    case canonical_project_registry_entries() do
+      {:ok, entries} ->
+        Map.new(entries, fn entry -> {entry.project_key, entry.display_name || entry.project_key} end)
+
+      _ ->
+        %{}
+    end
+  end
+
+  defp project_registry_module do
+    Application.get_env(:symphony_elixir, :project_registry_module, ProjectRegistry)
+  end
+
+  defp canonical_project_registry_entries do
+    project_registry_module = project_registry_module()
+
+    case project_registry_module do
+      ProjectRegistry ->
+        project_registry_module.normalized_entries(ProjectRegistry.default_path())
+
+      _ ->
+        project_registry_module.normalized_entries()
+    end
   end
 
   defp issue_matches(snapshot, issue_identifier) do

@@ -3,17 +3,14 @@ defmodule SymphonyElixir.ProjectRegistryTest do
 
   alias SymphonyElixir.ProjectRegistry
 
-  test "default_path resolves next to the current workflow file" do
-    assert ProjectRegistry.default_path() ==
-             Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml")
-  end
-
-  test "load reads the default project registry and preserves missing max_concurrent_agents as nil" do
+  test "load validates canonical registry fields and trims strings" do
     write_project_registry_file!(ProjectRegistry.default_path(), %{
       schema_version: 1,
+      linear_token_relative_path: "  .config/linear/project.token  ",
       projects: [
         %{
-          project_key: "project-a",
+          project_key: "  project-a  ",
+          display_name: "  Project A  ",
           enabled: true
         }
       ]
@@ -22,9 +19,11 @@ defmodule SymphonyElixir.ProjectRegistryTest do
     assert {:ok,
             %{
               schema_version: 1,
+              linear_token_relative_path: ".config/linear/project.token",
               projects: [
                 %{
                   project_key: "project-a",
+                  display_name: "Project A",
                   enabled: true,
                   max_concurrent_agents: nil
                 }
@@ -32,70 +31,181 @@ defmodule SymphonyElixir.ProjectRegistryTest do
             }} = ProjectRegistry.load()
   end
 
-  test "load returns missing when the default registry file does not exist" do
+  test "load returns missing when the registry file does not exist" do
     assert :missing = ProjectRegistry.load()
   end
 
-  test "load returns a parse error when the registry yaml is invalid" do
-    write_project_registry_file!(ProjectRegistry.default_path(), "schema_version: [\n")
+  test "load wraps file read errors" do
+    File.mkdir_p!(ProjectRegistry.default_path())
+
+    assert {:error, {:project_registry_read_error, path, :eisdir}} = ProjectRegistry.load()
+    assert path == ProjectRegistry.default_path()
+  end
+
+  test "load rejects missing and invalid canonical fields" do
+    invalid_cases = [
+      {%{
+         schema_version: 2,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+       }, "schema_version must equal 1"},
+      {%{
+         schema_version: 1,
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+       }, "linear_token_relative_path is required"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: "   ",
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+       }, "linear_token_relative_path must be a non-empty string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: 123,
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+       }, "linear_token_relative_path must be a string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: "/tmp/linear.token",
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+       }, "linear_token_relative_path must be a relative path"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token"
+       }, "projects is required"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: "invalid"
+       }, "projects must be a list"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: ["invalid"]
+       }, "projects[0] must be a map"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{display_name: "Project A", enabled: true}]
+       }, "projects[0].project_key is required"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: 123, display_name: "Project A", enabled: true}]
+       }, "projects[0].project_key must be a string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "   ", display_name: "Project A", enabled: true}]
+       }, "projects[0].project_key must be a non-empty string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", enabled: true}]
+       }, "projects[0].display_name is required"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: " ", enabled: true}]
+       }, "projects[0].display_name must be a non-empty string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: 123, enabled: true}]
+       }, "projects[0].display_name must be a string"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: true, extra: 1}]
+       }, "projects[0].extra is not allowed"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: "Project A"}]
+       }, "projects[0].enabled is required"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [%{project_key: "project-a", display_name: "Project A", enabled: "true"}]
+       }, "projects[0].enabled must be a boolean"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [
+           %{project_key: "project-a", display_name: "Project A", enabled: true, max_concurrent_agents: nil}
+         ]
+       }, "projects[0].max_concurrent_agents must be a positive integer"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [
+           %{project_key: "project-a", display_name: "Project A", enabled: true, max_concurrent_agents: 0}
+         ]
+       }, "projects[0].max_concurrent_agents must be a positive integer"},
+      {%{
+         schema_version: 1,
+         linear_token_relative_path: ".config/linear/project.token",
+         projects: [
+           %{project_key: "project-a", display_name: "Project A", enabled: true},
+           %{project_key: "project-a", display_name: "Project A duplicate", enabled: false}
+         ]
+       }, "duplicate project_key: project-a"}
+    ]
+
+    Enum.each(invalid_cases, fn {registry, expected_message} ->
+      write_project_registry_file!(ProjectRegistry.default_path(), registry)
+
+      assert {:error, {:invalid_project_registry, message}} = ProjectRegistry.load()
+      assert message =~ expected_message
+    end)
+  end
+
+  test "load rejects unexpected top-level fields" do
+    write_project_registry_file!(
+      ProjectRegistry.default_path(),
+      """
+      schema_version: 1
+      linear_token_relative_path: ".config/linear/project.token"
+      unexpected: true
+      projects:
+        - project_key: "project-a"
+          display_name: "Project A"
+          enabled: true
+      """
+    )
+
+    assert {:error, {:invalid_project_registry, "unexpected is not allowed"}} =
+             ProjectRegistry.load()
+  end
+
+  test "load rejects YAML parse failures and non-map payloads" do
+    registry_path = ProjectRegistry.default_path()
+
+    File.write!(registry_path, "[1, 2, 3]\n")
+    assert {:error, {:invalid_project_registry, "project registry must decode to a map"}} = ProjectRegistry.load()
+
+    File.write!(registry_path, "{not: valid")
 
     assert {:error, {:invalid_project_registry, message}} = ProjectRegistry.load()
     assert message =~ "failed to parse YAML"
   end
 
-  test "load rejects invalid registry shapes and forbidden project fields" do
-    invalid_cases = [
-      {%{projects: [%{project_key: "project-a", enabled: true}]}, "schema_version"},
-      {%{schema_version: 1}, "projects"},
-      {%{schema_version: 1, projects: %{}}, "projects"},
-      {%{schema_version: 1, projects: [%{enabled: true}]}, "projects[0].project_key"},
-      {%{schema_version: 1, projects: [%{project_key: 123, enabled: true}]}, "projects[0].project_key"},
-      {%{schema_version: 1, projects: [123]}, "projects[0] must be a map"},
-      {%{schema_version: 1, projects: [%{project_key: "project-a"}]}, "projects[0].enabled"},
-      {%{schema_version: 1, projects: [%{project_key: "project-a", enabled: "true"}]}, "projects[0].enabled"},
-      {%{
-         schema_version: 1,
-         projects: [%{project_key: "project-a", enabled: true, max_concurrent_agents: "15"}]
-       }, "projects[0].max_concurrent_agents"},
-      {%{
-         schema_version: 1,
-         projects: [%{project_key: "project-a", enabled: true, max_concurrent_agents: 0}]
-       }, "projects[0].max_concurrent_agents"},
-      {%{
-         schema_version: 1,
-         projects: [%{project_key: "project-a", enabled: true, max_concurrent_agents: nil}]
-       }, "projects[0].max_concurrent_agents"},
-      {%{
-         schema_version: 1,
-         projects: [%{project_key: "project-a", enabled: true, linear_project_slug: "legacy"}]
-       }, "projects[0].linear_project_slug"},
-      {%{
-         schema_version: 1,
-         projects: [
-           %{project_key: "project-a", enabled: true},
-           %{project_key: "project-a", enabled: false}
-         ]
-       }, "duplicate project_key"},
-      {%{schema_version: 2, projects: [%{project_key: "project-a", enabled: true}]}, "schema_version"}
-    ]
-
-    for {registry, expected_message} <- invalid_cases do
-      write_project_registry_file!(ProjectRegistry.default_path(), registry)
-
-      assert {:error, {:invalid_project_registry, message}} = ProjectRegistry.load()
-      assert message =~ expected_message
-    end
-  end
-
-  test "load_normalized reports registry source when registry is present and valid" do
+  test "load_normalized returns registry entries with default limits" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
 
     write_project_registry_file!(ProjectRegistry.default_path(), %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
       projects: [
         %{
           project_key: "project-a",
+          display_name: "Project A",
           enabled: true
+        },
+        %{
+          project_key: "project-b",
+          display_name: "Project B",
+          enabled: false,
+          max_concurrent_agents: 7
         }
       ]
     })
@@ -105,249 +215,199 @@ defmodule SymphonyElixir.ProjectRegistryTest do
              [
                %{
                  project_key: "project-a",
+                 display_name: "Project A",
                  enabled: true,
-                 max_concurrent_agents: 15,
-                 display_name: nil
+                 max_concurrent_agents: 15
+               },
+               %{
+                 project_key: "project-b",
+                 display_name: "Project B",
+                 enabled: false,
+                 max_concurrent_agents: 7
                }
              ]}} = ProjectRegistry.load_normalized()
   end
 
-  test "load_normalized reports legacy source when registry is missing and tracker.project_slug is available" do
+  test "load_normalized falls back to the legacy workflow slug only when the registry is missing" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "  legacy-project  ")
+
     assert {:ok,
             {:legacy,
              [
                %{
-                 project_key: "project",
+                 project_key: "legacy-project",
+                 display_name: nil,
                  enabled: true,
-                 max_concurrent_agents: 15,
-                 display_name: nil
+                 max_concurrent_agents: 15
                }
              ]}} = ProjectRegistry.load_normalized()
   end
 
-  test "load_normalized reports missing when registry and legacy slug are both absent" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
+  test "normalized_entries and load_normalized handle missing and invalid registry paths directly" do
+    explicit_registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "explicit_registry.yaml")
 
-    assert :missing = ProjectRegistry.load_normalized()
-  end
-
-  test "load_normalized with an explicit path does not implicitly consult the current workflow legacy slug" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
-
-    assert :missing = ProjectRegistry.load_normalized(ProjectRegistry.default_path())
-  end
-
-  test "load_normalized reports a conflict when registry and legacy slug disagree" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
-
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
+    write_project_registry_file!(explicit_registry_path, %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
       projects: [
-        %{
-          project_key: "project-a",
-          enabled: true
-        }
+        %{project_key: "project-a", display_name: "Project A", enabled: true}
       ]
     })
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             ProjectRegistry.load_normalized()
-  end
+    assert {:ok, [%{project_key: "project-a", max_concurrent_agents: 15}]} =
+             ProjectRegistry.normalized_entries(explicit_registry_path)
 
-  test "load_normalized reports a conflict when registry is empty and a legacy slug is still present" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
+    File.write!(explicit_registry_path, "projects: [\n")
 
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
-      schema_version: 1,
-      projects: []
-    })
+    assert {:error, {:invalid_project_registry, message}} =
+             ProjectRegistry.normalized_entries(explicit_registry_path)
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             ProjectRegistry.load_normalized()
-  end
+    assert message =~ "failed to parse YAML"
 
-  test "load_normalized forwards registry parse failures" do
-    write_project_registry_file!(ProjectRegistry.default_path(), "schema_version: [\n")
+    assert {:error, {:invalid_project_registry, message}} =
+             ProjectRegistry.load_normalized(explicit_registry_path)
 
-    assert {:error, {:invalid_project_registry, message}} = ProjectRegistry.load_normalized()
     assert message =~ "failed to parse YAML"
   end
 
-  test "load_normalized forwards workflow read failures instead of swallowing them" do
-    original_workflow_path = Workflow.workflow_file_path()
-    missing_workflow_path = Path.join(Path.dirname(original_workflow_path), "MISSING_WORKFLOW.md")
-
-    on_exit(fn -> Workflow.set_workflow_file_path(original_workflow_path) end)
-    Workflow.set_workflow_file_path(missing_workflow_path)
-
-    assert {:error, {:missing_workflow_file, ^missing_workflow_path, _reason}} =
-             ProjectRegistry.load_normalized()
-  end
-
-  test "load_normalized surfaces invalid legacy tracker.project_slug types" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: 123)
-
-    assert {:error, {:invalid_workflow_config, message}} = ProjectRegistry.load_normalized()
-    assert message =~ "tracker.project_slug"
-  end
-
-  test "normalized_entries fills the default max_concurrent_agents for registry entries" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
-
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
-      schema_version: 1,
-      projects: [
-        %{
-          project_key: "project-a",
-          enabled: true
-        }
-      ]
-    })
-
-    assert {:ok,
-            [
-              %{
-                project_key: "project-a",
-                enabled: true,
-                max_concurrent_agents: 15,
-                display_name: nil
-              }
-            ]} = ProjectRegistry.normalized_entries()
-  end
-
-  test "normalized_entries only expose the stage output contract for disabled projects" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
-
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
-      schema_version: 1,
-      projects: [
-        %{
-          project_key: "project-a",
-          enabled: false
-        }
-      ]
-    })
-
-    assert {:ok, [entry]} = ProjectRegistry.normalized_entries()
-    assert entry == %{project_key: "project-a", enabled: false, max_concurrent_agents: 15, display_name: nil}
-    assert Map.keys(entry) |> Enum.sort() == [:display_name, :enabled, :max_concurrent_agents, :project_key]
-    refute Map.has_key?(entry, :linear_project_slug)
-    refute Map.has_key?(entry, :linear_project_id)
-  end
-
-  test "normalized_entries falls back to the legacy tracker.project_slug when the registry is missing" do
-    assert {:ok,
-            [
-              %{
-                project_key: "project",
-                enabled: true,
-                max_concurrent_agents: 15,
-                display_name: nil
-              }
-            ]} = ProjectRegistry.normalized_entries()
-  end
-
-  test "normalized_entries with an explicit path does not consult the current workflow legacy slug" do
+  test "normalized_entries returns explicit path errors and workflow type errors" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
 
     assert {:error, {:missing_project_registry, path}} =
              ProjectRegistry.normalized_entries(ProjectRegistry.default_path())
 
     assert path == ProjectRegistry.default_path()
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: 123)
+
+    assert {:error, {:invalid_workflow_config, message}} = ProjectRegistry.normalized_entries()
+    assert message =~ "tracker.project_slug must be a string"
   end
 
-  test "normalized_entries returns a missing legacy slug error when neither registry nor tracker.project_slug exists" do
+  test "normalized_entries propagates invalid default registry errors" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
+
+    write_project_registry_file!(ProjectRegistry.default_path(), %{
+      schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
+      projects: [
+        %{project_key: "project-a", display_name: 123, enabled: true}
+      ]
+    })
+
+    assert {:error, {:invalid_project_registry, "projects[0].display_name must be a string"}} =
+             ProjectRegistry.normalized_entries()
+  end
+
+  test "normalized_entries uses legacy fallback only for default path and surfaces workflow load errors" do
+    explicit_registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "explicit_registry.yaml")
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
+
+    assert {:error, {:missing_project_registry, ^explicit_registry_path}} =
+             ProjectRegistry.normalized_entries(explicit_registry_path)
+
+    File.rm!(Workflow.workflow_file_path())
+
+    assert {:error, {:missing_workflow_file, _, :enoent}} = ProjectRegistry.normalized_entries()
+  end
+
+  test "normalized_entries returns a missing legacy slug error when neither source exists" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
 
     assert {:error, :missing_linear_project_slug} = ProjectRegistry.normalized_entries()
   end
 
-  test "normalized_entries keeps tracker.project_slug only as a compatibility bridge when registry exists" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "project-a")
-
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
-      schema_version: 1,
-      projects: [
-        %{
-          project_key: "project-a",
-          enabled: true,
-          max_concurrent_agents: 30
-        }
-      ]
-    })
-
-    assert {:ok,
-            [
-              %{
-                project_key: "project-a",
-                enabled: true,
-                max_concurrent_agents: 30,
-                display_name: nil
-              }
-            ]} = ProjectRegistry.normalized_entries()
-  end
-
-  test "normalized_entries rejects a conflicting legacy tracker.project_slug when the registry has one project" do
+  test "normalized_entries unwraps legacy and registry sources" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
 
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
+    assert {:ok, [%{project_key: "legacy-project", display_name: nil}]} =
+             ProjectRegistry.normalized_entries()
+
+    registry_path = ProjectRegistry.default_path()
+
+    write_project_registry_file!(registry_path, %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
       projects: [
-        %{
-          project_key: "project-a",
-          enabled: true
-        }
+        %{project_key: "project-a", display_name: "Project A", enabled: true}
       ]
     })
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             ProjectRegistry.normalized_entries()
+    assert {:ok, [%{project_key: "project-a", max_concurrent_agents: 15}]} =
+             ProjectRegistry.normalized_entries(registry_path)
   end
 
-  test "normalized_entries rejects any non-empty legacy tracker.project_slug when the registry has multiple projects" do
+  test "normalized entry helpers propagate registry and workflow errors" do
+    registry_path = ProjectRegistry.default_path()
+
+    write_project_registry_file!(registry_path, %{
+      schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
+      projects: [%{project_key: "project-a", display_name: "Project A", enabled: true}]
+    })
+
+    assert {:ok, {:registry, [%{project_key: "project-a"}]}} =
+             ProjectRegistry.load_normalized(registry_path)
+
+    File.rm!(Workflow.workflow_file_path())
+    assert {:error, {:missing_workflow_file, _, :enoent}} = ProjectRegistry.load_normalized()
+
     write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
 
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
+    write_project_registry_file!(registry_path, %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
+      projects: [%{project_key: "project-a", display_name: 123, enabled: true}]
+    })
+
+    assert {:error, {:invalid_project_registry, "projects[0].display_name must be a string"}} =
+             ProjectRegistry.normalized_entries(registry_path)
+  end
+
+  test "load_normalized treats missing tracker config as no legacy slug" do
+    custom_registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "custom_registry.yaml")
+
+    assert :missing = ProjectRegistry.load_normalized(custom_registry_path, nil)
+
+    File.write!(Workflow.workflow_file_path(), "---\nworkspace:\n  root: \"/tmp/workspace\"\n---\nprompt\n")
+
+    assert :missing = ProjectRegistry.load_normalized()
+  end
+
+  test "load_normalized reads explicit paths and normalized_entries reads tracker string keys" do
+    explicit_registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "explicit_registry.yaml")
+
+    write_project_registry_file!(explicit_registry_path, %{
+      schema_version: 1,
+      linear_token_relative_path: ".config/linear/project.token",
       projects: [
-        %{
-          project_key: "project-a",
-          enabled: true
-        },
-        %{
-          project_key: "project-b",
-          enabled: false,
-          max_concurrent_agents: 22
-        }
+        %{project_key: "project-a", display_name: "Project A", enabled: true}
       ]
     })
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             ProjectRegistry.normalized_entries()
+    assert {:ok, {:registry, [%{project_key: "project-a", max_concurrent_agents: 15}]}} =
+             ProjectRegistry.load_normalized(explicit_registry_path)
+
+    workflow_path = Workflow.workflow_file_path()
+
+    File.write!(
+      workflow_path,
+      """
+      ---
+      tracker:
+        project_slug: "string-key-project"
+      ---
+      prompt
+      """
+    )
+
+    assert {:ok, [%{project_key: "string-key-project"}]} = ProjectRegistry.normalized_entries()
   end
 
-  test "normalized_entries surfaces invalid legacy tracker.project_slug types" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: 123)
-
-    assert {:error, {:invalid_workflow_config, message}} = ProjectRegistry.normalized_entries()
-    assert message =~ "tracker.project_slug"
-  end
-
-  test "normalized_entries keep display_name as a nil projection placeholder for this stage" do
-    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: nil)
-
-    write_project_registry_file!(ProjectRegistry.default_path(), %{
-      schema_version: 1,
-      projects: [
-        %{
-          project_key: "project-a",
-          enabled: true,
-          max_concurrent_agents: 30
-        }
-      ]
-    })
-
-    assert {:ok, [%{project_key: "project-a", enabled: true, max_concurrent_agents: 30, display_name: nil}]} =
-             ProjectRegistry.normalized_entries()
+  test "normalize_legacy_project_slug trims strings and rejects non-binaries" do
+    assert ProjectRegistry.normalize_legacy_project_slug("  project-a  ") == "project-a"
+    assert ProjectRegistry.normalize_legacy_project_slug("   ") == nil
+    assert ProjectRegistry.normalize_legacy_project_slug(nil) == nil
+    assert ProjectRegistry.normalize_legacy_project_slug(123) == nil
   end
 end

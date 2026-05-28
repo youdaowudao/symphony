@@ -19,6 +19,18 @@ defmodule SymphonyElixir.ProjectContextTest do
     assert context.max_concurrent_agents == 15
   end
 
+  test "falls back to project_key when display_name is blank" do
+    assert {:ok, context} =
+             ProjectContext.from_registry_entry(%{
+               project_key: "project-a",
+               display_name: "   ",
+               enabled: true,
+               max_concurrent_agents: 15
+             })
+
+    assert context.display_name == "project-a"
+  end
+
   test "rejects invalid normalized registry entries" do
     invalid_entries = [
       %{enabled: true, max_concurrent_agents: 15},

@@ -42,6 +42,105 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     end
   end
 
+  test "workspace after_create hook receives repo url for direct single-project runs" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-repo-url-#{System.unique_integer([:positive])}"
+      )
+
+    previous_cwd = File.cwd!()
+    previous_repo_url = System.get_env("SYMPHONY_REPO_URL")
+
+    on_exit(fn ->
+      File.cd!(previous_cwd)
+      restore_env("SYMPHONY_REPO_URL", previous_repo_url)
+    end)
+
+    try do
+      repo_root = Path.join(test_root, "repo")
+      workspace_root = Path.join(test_root, "workspaces")
+      source_repo = Path.join(test_root, "source.git")
+
+      File.mkdir_p!(repo_root)
+      File.mkdir_p!(workspace_root)
+
+      System.cmd("git", ["init", "--bare", source_repo])
+      System.cmd("git", ["-C", repo_root, "init", "-b", "main"])
+      System.cmd("git", ["-C", repo_root, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", repo_root, "config", "user.email", "test@example.com"])
+      File.write!(Path.join(repo_root, "README.md"), "direct run\n")
+      System.cmd("git", ["-C", repo_root, "add", "README.md"])
+      System.cmd("git", ["-C", repo_root, "commit", "-m", "initial"])
+      System.cmd("git", ["-C", repo_root, "remote", "add", "origin", source_repo])
+      System.cmd("git", ["-C", repo_root, "push", "-u", "origin", "main"])
+      System.cmd("git", ["-C", source_repo, "symbolic-ref", "HEAD", "refs/heads/main"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create:
+          ~s([ "$SYMPHONY_REPO_URL" = "#{source_repo}" ]\n) <>
+            ~s(git clone --depth 1 "$SYMPHONY_REPO_URL" .)
+      )
+
+      File.cd!(repo_root)
+      System.put_env("SYMPHONY_REPO_URL", "https://invalid.example.test/wrong.git")
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-REPO-URL")
+      assert File.exists?(Path.join(workspace, ".git"))
+      assert File.read!(Path.join(workspace, "README.md")) == "direct run\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
+  test "workspace after_create hook falls back to the current repo when workflow path has no git origin" do
+    test_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-workspace-hook-repo-fallback-#{System.unique_integer([:positive])}"
+      )
+
+    previous_cwd = File.cwd!()
+    previous_repo_url = System.get_env("SYMPHONY_REPO_URL")
+
+    on_exit(fn ->
+      File.cd!(previous_cwd)
+      restore_env("SYMPHONY_REPO_URL", previous_repo_url)
+    end)
+
+    try do
+      repo_root = Path.join(test_root, "repo")
+      workspace_root = Path.join(test_root, "workspaces")
+
+      File.mkdir_p!(repo_root)
+      File.mkdir_p!(workspace_root)
+
+      System.cmd("git", ["-C", repo_root, "init", "-b", "main"])
+      System.cmd("git", ["-C", repo_root, "config", "user.name", "Test User"])
+      System.cmd("git", ["-C", repo_root, "config", "user.email", "test@example.com"])
+      File.write!(Path.join(repo_root, "README.md"), "fallback run\n")
+      System.cmd("git", ["-C", repo_root, "add", "README.md"])
+      System.cmd("git", ["-C", repo_root, "commit", "-m", "initial"])
+
+      write_workflow_file!(Workflow.workflow_file_path(),
+        workspace_root: workspace_root,
+        hook_after_create:
+          "git clone --depth 1 " <>
+            ~s("${SYMPHONY_REPO_URL:?set SYMPHONY_REPO_URL for direct single-project runs}" .)
+      )
+
+      File.cd!(repo_root)
+      System.put_env("SYMPHONY_REPO_URL", "https://invalid.example.test/wrong.git")
+
+      assert {:ok, workspace} = Workspace.create_for_issue("MT-REPO-FALLBACK")
+      assert File.exists?(Path.join(workspace, ".git"))
+      assert File.read!(Path.join(workspace, "README.md")) == "fallback run\n"
+    after
+      File.rm_rf(test_root)
+    end
+  end
+
   test "workspace path is deterministic per issue identifier" do
     workspace_root =
       Path.join(
@@ -1271,8 +1370,24 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
 
   test "config reads defaults for optional settings" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+
+    previous_linear_api_token =
+      Application.get_env(:symphony_elixir, :linear_api_token, :__symphony_missing__)
+
     on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+
+    on_exit(fn ->
+      case previous_linear_api_token do
+        :__symphony_missing__ ->
+          Application.delete_env(:symphony_elixir, :linear_api_token)
+
+        value ->
+          Application.put_env(:symphony_elixir, :linear_api_token, value)
+      end
+    end)
+
     System.delete_env("LINEAR_API_KEY")
+    Application.delete_env(:symphony_elixir, :linear_api_token)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       workspace_root: nil,
@@ -1321,6 +1436,8 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert config.codex.turn_timeout_ms == 3_600_000
     assert config.codex.read_timeout_ms == 5_000
     assert config.codex.stall_timeout_ms == 300_000
+
+    Application.put_env(:symphony_elixir, :linear_api_token, "test-linear-token")
 
     write_workflow_file!(Workflow.workflow_file_path(),
       codex_command: "codex --config 'model=\"gpt-5.5\"' app-server"
@@ -1437,7 +1554,7 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     assert Config.settings!().codex.command == "codex app-server"
   end
 
-  test "config resolves $VAR references for env-backed secret and path values" do
+  test "schema resolves $VAR references for env-backed secret and path values" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
@@ -1455,19 +1572,19 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       restore_env(api_key_env_var, previous_api_key)
     end)
 
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "$#{api_key_env_var}",
-      workspace_root: "$#{workspace_env_var}",
-      codex_command: "#{codex_bin} app-server"
-    )
+    assert {:ok, config} =
+             Schema.parse(%{
+               tracker: %{api_key: "$#{api_key_env_var}"},
+               workspace: %{root: "$#{workspace_env_var}"},
+               codex: %{command: "#{codex_bin} app-server"}
+             })
 
-    config = Config.settings!()
     assert config.tracker.api_key == api_key
     assert config.workspace.root == Path.expand(workspace_root)
     assert config.codex.command == "#{codex_bin} app-server"
   end
 
-  test "config no longer resolves legacy env: references" do
+  test "schema no longer resolves legacy env: references" do
     workspace_env_var = "SYMP_WORKSPACE_ROOT_#{System.unique_integer([:positive])}"
     api_key_env_var = "SYMP_LINEAR_API_KEY_#{System.unique_integer([:positive])}"
     workspace_root = Path.join("/tmp", "symphony-workspace-root")
@@ -1484,12 +1601,12 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
       restore_env(api_key_env_var, previous_api_key)
     end)
 
-    write_workflow_file!(Workflow.workflow_file_path(),
-      tracker_api_token: "env:#{api_key_env_var}",
-      workspace_root: "env:#{workspace_env_var}"
-    )
+    assert {:ok, config} =
+             Schema.parse(%{
+               tracker: %{api_key: "env:#{api_key_env_var}"},
+               workspace: %{root: "env:#{workspace_env_var}"}
+             })
 
-    config = Config.settings!()
     assert config.tracker.api_key == "env:#{api_key_env_var}"
     assert config.workspace.root == "env:#{workspace_env_var}"
   end
@@ -1562,18 +1679,14 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     previous_missing_workspace_env = System.get_env(missing_workspace_env)
     previous_empty_secret_env = System.get_env(empty_secret_env)
     previous_missing_secret_env = System.get_env(missing_secret_env)
-    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
-
     System.delete_env(missing_workspace_env)
     System.put_env(empty_secret_env, "")
     System.delete_env(missing_secret_env)
-    System.put_env("LINEAR_API_KEY", "fallback-linear-token")
 
     on_exit(fn ->
       restore_env(missing_workspace_env, previous_missing_workspace_env)
       restore_env(empty_secret_env, previous_empty_secret_env)
       restore_env(missing_secret_env, previous_missing_secret_env)
-      restore_env("LINEAR_API_KEY", previous_linear_api_key)
     end)
 
     assert {:ok, settings} =
@@ -1596,8 +1709,23 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
                workspace: %{root: ""}
              })
 
-    assert settings.tracker.api_key == "fallback-linear-token"
+    assert settings.tracker.api_key == nil
     assert settings.workspace.root == Path.join(System.tmp_dir!(), "symphony_workspaces")
+  end
+
+  test "runtime tracker token comes only from startup injection, not workflow or LINEAR_API_KEY fallback" do
+    previous_linear_api_key = System.get_env("LINEAR_API_KEY")
+    on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
+    System.put_env("LINEAR_API_KEY", "external-env-token")
+
+    Application.put_env(:symphony_elixir, :linear_api_token, "startup-injected-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "workflow-token",
+      tracker_project_slug: "project-a"
+    )
+
+    assert Config.settings!().tracker.api_key == "startup-injected-token"
   end
 
   test "schema resolves sandbox policies from explicit and default workspaces" do

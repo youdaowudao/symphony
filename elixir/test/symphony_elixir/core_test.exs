@@ -98,9 +98,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/linear_api_key.token",
       projects: [
         %{
           project_key: "project-a",
+          display_name: "Project A",
           enabled: true
         }
       ]
@@ -109,7 +111,7 @@ defmodule SymphonyElixir.CoreTest do
     assert :ok = Config.validate!()
   end
 
-  test "config validation rejects legacy tracker.project_slug conflicts when registry is present" do
+  test "config validation ignores legacy tracker.project_slug when canonical registry is present" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
       tracker_project_slug: "legacy-project"
@@ -117,23 +119,25 @@ defmodule SymphonyElixir.CoreTest do
 
     write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/linear_api_key.token",
       projects: [
         %{
           project_key: "project-a",
+          display_name: "Project A",
           enabled: true
         },
         %{
           project_key: "project-b",
+          display_name: "Project B",
           enabled: false
         }
       ]
     })
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             Config.validate!()
+    assert :ok = Config.validate!()
   end
 
-  test "config validation rejects a legacy tracker.project_slug when the registry is explicitly empty" do
+  test "config validation allows an explicitly empty registry even when legacy tracker.project_slug remains in WORKFLOW.md" do
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: "token",
       tracker_project_slug: "legacy-project"
@@ -141,11 +145,11 @@ defmodule SymphonyElixir.CoreTest do
 
     write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/linear_api_key.token",
       projects: []
     })
 
-    assert {:error, {:project_registry_conflict, %{legacy_project_slug: "legacy-project"}}} =
-             Config.validate!()
+    assert :ok = Config.validate!()
   end
 
   test "config validation surfaces invalid project registry errors" do
@@ -166,15 +170,226 @@ defmodule SymphonyElixir.CoreTest do
 
     write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
       schema_version: 1,
+      linear_token_relative_path: ".config/linear/linear_api_key.token",
       projects: [
         %{
           project_key: "project-a",
+          display_name: "Project A",
           enabled: false
         }
       ]
     })
 
     assert :ok = Config.validate!()
+  end
+
+  test "config validation accepts yaml token path as static control-plane data without reading the file in task 1" do
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "token",
+      tracker_project_slug: nil
+    )
+
+    missing_token_path =
+      ".config/linear/missing-linear-token-#{System.unique_integer([:positive])}.token"
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      linear_token_relative_path: missing_token_path,
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "Project A",
+          enabled: true
+        }
+      ]
+    })
+
+    assert :ok = Config.validate!()
+  end
+
+  test "linear token bootstrap reads HOME-relative project_registry token and injects runtime tracker token" do
+    home_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-linear-token-home-#{System.unique_integer([:positive])}"
+      )
+
+    previous_home = System.get_env("HOME")
+    on_exit(fn -> restore_env("HOME", previous_home) end)
+    System.put_env("HOME", home_root)
+
+    token_relative_path = ".config/linear/bootstrap.token"
+    token_path = Path.join(home_root, token_relative_path)
+
+    File.mkdir_p!(Path.dirname(token_path))
+    File.write!(token_path, "registry-token\n")
+
+    write_workflow_file!(Workflow.workflow_file_path(),
+      tracker_api_token: "workflow-token",
+      tracker_project_slug: "project-a"
+    )
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      linear_token_relative_path: token_relative_path,
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "Project A",
+          enabled: true
+        }
+      ]
+    })
+
+    assert :ok = SymphonyElixir.LinearTokenBootstrap.bootstrap(Workflow.workflow_file_path())
+    assert Config.settings!().tracker.api_key == "registry-token"
+  end
+
+  test "linear token bootstrap preserves the previous runtime token when bootstrap fails" do
+    home_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-linear-token-preserve-home-#{System.unique_integer([:positive])}"
+      )
+
+    previous_home = System.get_env("HOME")
+
+    previous_linear_api_token =
+      Application.get_env(:symphony_elixir, :linear_api_token, :__symphony_missing__)
+
+    on_exit(fn ->
+      restore_env("HOME", previous_home)
+
+      case previous_linear_api_token do
+        :__symphony_missing__ ->
+          Application.delete_env(:symphony_elixir, :linear_api_token)
+
+        value ->
+          Application.put_env(:symphony_elixir, :linear_api_token, value)
+      end
+    end)
+
+    System.put_env("HOME", home_root)
+    Application.put_env(:symphony_elixir, :linear_api_token, "previous-runtime-token")
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "project-a")
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      linear_token_relative_path: ".config/linear/missing-bootstrap.token",
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "Project A",
+          enabled: true
+        }
+      ]
+    })
+
+    assert {:error, message} =
+             SymphonyElixir.LinearTokenBootstrap.bootstrap(Workflow.workflow_file_path())
+
+    assert message =~ "token file not found"
+    assert Application.get_env(:symphony_elixir, :linear_api_token) == "previous-runtime-token"
+  end
+
+  test "linear token bootstrap rejects HOME-relative path escapes" do
+    home_root =
+      Path.join(
+        System.tmp_dir!(),
+        "symphony-elixir-linear-token-escape-home-#{System.unique_integer([:positive])}"
+      )
+
+    previous_home = System.get_env("HOME")
+    on_exit(fn -> restore_env("HOME", previous_home) end)
+    System.put_env("HOME", home_root)
+
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "project-a")
+
+    write_project_registry_file!(Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml"), %{
+      schema_version: 1,
+      linear_token_relative_path: "../../etc/passwd",
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "Project A",
+          enabled: true
+        }
+      ]
+    })
+
+    assert {:error, message} =
+             SymphonyElixir.LinearTokenBootstrap.bootstrap(Workflow.workflow_file_path())
+
+    assert message =~ "must stay within HOME"
+  end
+
+  test "project registry trims display_name before normalized output" do
+    registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml")
+
+    write_project_registry_file!(registry_path, %{
+      schema_version: 1,
+      linear_token_relative_path: ".config/linear/linear_api_key.token",
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "  Project A  ",
+          enabled: true
+        }
+      ]
+    })
+
+    assert {:ok, {:registry, [entry]}} = SymphonyElixir.ProjectRegistry.load_normalized(registry_path, nil)
+    assert entry.display_name == "Project A"
+  end
+
+  test "project registry rejects absolute linear_token_relative_path values" do
+    registry_path = Path.join(Path.dirname(Workflow.workflow_file_path()), "project_registry.yaml")
+
+    write_project_registry_file!(registry_path, %{
+      schema_version: 1,
+      linear_token_relative_path: "/tmp/linear.token",
+      projects: [
+        %{
+          project_key: "project-a",
+          display_name: "Project A",
+          enabled: true
+        }
+      ]
+    })
+
+    assert {:error, {:invalid_project_registry, message}} =
+             SymphonyElixir.ProjectRegistry.load(registry_path)
+
+    assert message =~ "linear_token_relative_path"
+    assert message =~ "relative path"
+  end
+
+  test "project registry missing-registry legacy fallback still returns display_name nil" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_project_slug: "legacy-project")
+
+    assert {:ok, {:legacy, [entry]}} = SymphonyElixir.ProjectRegistry.load_normalized()
+    assert entry.project_key == "legacy-project"
+    assert entry.display_name == nil
+  end
+
+  test "checked-in canonical project registry uses the frozen token path and explicit project limit" do
+    registry_path = Path.expand("../../project_registry.yaml", __DIR__)
+
+    assert {:ok, registry} = SymphonyElixir.ProjectRegistry.load(registry_path)
+    assert registry.schema_version == 1
+    assert registry.linear_token_relative_path == ".config/linear/linear_api_key.token"
+    assert is_list(registry.projects)
+
+    for project <- registry.projects do
+      assert is_binary(project.project_key)
+      assert String.trim(project.project_key) != ""
+      assert is_binary(project.display_name)
+      assert String.trim(project.display_name) != ""
+      assert is_boolean(project.enabled)
+      assert is_integer(project.max_concurrent_agents)
+      assert project.max_concurrent_agents > 0
+    end
   end
 
   test "current WORKFLOW.md file is valid and complete" do
@@ -205,12 +420,12 @@ defmodule SymphonyElixir.CoreTest do
     assert Config.workflow_prompt() == prompt
   end
 
-  test "linear api token resolves from LINEAR_API_KEY env var" do
+  test "linear api token no longer resolves from LINEAR_API_KEY env var" do
     previous_linear_api_key = System.get_env("LINEAR_API_KEY")
-    env_api_key = "test-linear-api-key"
 
     on_exit(fn -> restore_env("LINEAR_API_KEY", previous_linear_api_key) end)
-    System.put_env("LINEAR_API_KEY", env_api_key)
+    System.put_env("LINEAR_API_KEY", "test-linear-api-key")
+    Application.delete_env(:symphony_elixir, :linear_api_token)
 
     write_workflow_file!(Workflow.workflow_file_path(),
       tracker_api_token: nil,
@@ -218,9 +433,9 @@ defmodule SymphonyElixir.CoreTest do
       codex_command: "/bin/sh app-server"
     )
 
-    assert Config.settings!().tracker.api_key == env_api_key
+    assert Config.settings!().tracker.api_key == nil
     assert Config.settings!().tracker.project_slug == "project"
-    assert :ok = Config.validate!()
+    assert {:error, :missing_linear_api_token} = Config.validate!()
   end
 
   test "linear assignee resolves from LINEAR_ASSIGNEE env var" do
@@ -906,16 +1121,18 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    down_sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {state, retry_entry} = wait_for_retry_attempt(pid, runtime_key, 3)
 
     assert %{attempt: 3, due_at_ms: due_at_ms, identifier: "MT-559", error: "agent exited: :boom"} =
-             state.retry_attempts[runtime_key]
+             retry_entry
 
     refute Map.has_key?(state.retry_attempts, issue_id)
 
-    assert_due_in_range(due_at_ms, 39_000, 40_500)
+    assert due_at_ms >= down_sent_at_ms + 40_000
+    assert due_at_ms <= down_sent_at_ms + 40_500
   end
 
   test "first abnormal worker exit waits before retrying" do
@@ -950,16 +1167,18 @@ defmodule SymphonyElixir.CoreTest do
       |> Map.put(:retry_attempts, %{})
     end)
 
+    down_sent_at_ms = System.monotonic_time(:millisecond)
     send(pid, {:DOWN, ref, :process, self(), :boom})
-    Process.sleep(50)
-    state = :sys.get_state(pid)
+
+    {state, retry_entry} = wait_for_retry_attempt(pid, runtime_key, 1)
 
     assert %{attempt: 1, due_at_ms: due_at_ms, identifier: "MT-560", error: "agent exited: :boom"} =
-             state.retry_attempts[runtime_key]
+             retry_entry
 
     refute Map.has_key?(state.retry_attempts, issue_id)
 
-    assert_due_in_range(due_at_ms, 9_000, 10_500)
+    assert due_at_ms >= down_sent_at_ms + 10_000
+    assert due_at_ms <= down_sent_at_ms + 10_500
   end
 
   test "stale retry timer messages do not consume newer retry entries" do
@@ -1192,11 +1411,26 @@ defmodule SymphonyElixir.CoreTest do
     assert Orchestrator.should_dispatch_project_candidate_for_test(issue, "project-a", 5, state)
   end
 
-  defp assert_due_in_range(due_at_ms, min_remaining_ms, max_remaining_ms) do
-    remaining_ms = due_at_ms - System.monotonic_time(:millisecond)
+  defp wait_for_retry_attempt(pid, runtime_key, expected_attempt, timeout_ms \\ 1_500, interval_ms \\ 10) do
+    deadline_ms = System.monotonic_time(:millisecond) + timeout_ms
+    do_wait_for_retry_attempt(pid, runtime_key, expected_attempt, deadline_ms, interval_ms)
+  end
 
-    assert remaining_ms >= min_remaining_ms
-    assert remaining_ms <= max_remaining_ms
+  defp do_wait_for_retry_attempt(pid, runtime_key, expected_attempt, deadline_ms, interval_ms) do
+    state = :sys.get_state(pid)
+
+    case Map.get(state.retry_attempts, runtime_key) do
+      %{attempt: ^expected_attempt} = retry_entry ->
+        {state, retry_entry}
+
+      _ ->
+        if System.monotonic_time(:millisecond) < deadline_ms do
+          Process.sleep(interval_ms)
+          do_wait_for_retry_attempt(pid, runtime_key, expected_attempt, deadline_ms, interval_ms)
+        else
+          flunk("expected retry_attempts[#{inspect(runtime_key)}] to reach attempt #{expected_attempt}")
+        end
+    end
   end
 
   defp restore_app_env(key, nil), do: Application.delete_env(:symphony_elixir, key)
@@ -1358,29 +1592,55 @@ defmodule SymphonyElixir.CoreTest do
     original_workflow_path = Workflow.workflow_file_path()
     workflow_store_pid = Process.whereis(SymphonyElixir.WorkflowStore)
 
-    on_exit(fn ->
+    suspended_processes =
+      for name <- [SymphonyElixir.Orchestrator, SymphonyElixir.StatusDashboard],
+          pid = Process.whereis(name),
+          is_pid(pid) do
+        :ok = :sys.suspend(pid)
+        {name, pid}
+      end
+
+    try do
+      assert :ok =
+               Supervisor.terminate_child(
+                 SymphonyElixir.Supervisor,
+                 SymphonyElixir.WorkflowStore
+               )
+
+      Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
+
+      issue = %Issue{
+        identifier: "MT-780",
+        title: "Workflow unavailable",
+        description: "Missing workflow file",
+        state: "Todo",
+        url: "https://example.org/issues/MT-780",
+        labels: []
+      }
+
+      assert_raise RuntimeError, ~r/workflow_unavailable:/, fn ->
+        PromptBuilder.build_prompt(issue)
+      end
+    after
       Workflow.set_workflow_file_path(original_workflow_path)
 
       if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
-        Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+        _ =
+          Supervisor.restart_child(
+            SymphonyElixir.Supervisor,
+            SymphonyElixir.WorkflowStore
+          )
       end
-    end)
 
-    assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.WorkflowStore)
+      Enum.each(suspended_processes, fn {name, pid} ->
+        if Process.alive?(pid) and Process.whereis(name) == pid do
+          :ok = :sys.resume(pid)
+        end
+      end)
 
-    Workflow.set_workflow_file_path(Path.join(System.tmp_dir!(), "missing-workflow-#{System.unique_integer([:positive])}.md"))
-
-    issue = %Issue{
-      identifier: "MT-780",
-      title: "Workflow unavailable",
-      description: "Missing workflow file",
-      state: "Todo",
-      url: "https://example.org/issues/MT-780",
-      labels: []
-    }
-
-    assert_raise RuntimeError, ~r/workflow_unavailable:/, fn ->
-      PromptBuilder.build_prompt(issue)
+      if is_pid(workflow_store_pid) and is_nil(Process.whereis(SymphonyElixir.WorkflowStore)) do
+        flunk("WorkflowStore failed to restart during cleanup")
+      end
     end
   end
 
@@ -1432,6 +1692,57 @@ defmodule SymphonyElixir.CoreTest do
     prompt = PromptBuilder.build_prompt(issue, attempt: 2)
 
     assert prompt == "Retry #2"
+  end
+
+  test "prompt builder normalizes invalid utf8 bytes in issue text before handing prompt to codex" do
+    workflow_prompt = "Title={{ issue.title }} Desc={{ issue.description }}"
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: workflow_prompt)
+
+    invalid_bytes = <<228, 189, 160, 230, 173, 163, 229, 156, 168, 255, 254>>
+
+    issue = %Issue{
+      identifier: "MT-UTF8",
+      title: invalid_bytes,
+      description: invalid_bytes,
+      state: "In Progress",
+      url: "https://example.org/issues/MT-UTF8",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue)
+
+    assert is_binary(prompt)
+    assert String.valid?(prompt)
+    assert prompt =~ "Title="
+    assert prompt =~ "Desc="
+  end
+
+  test "prompt builder never returns tuple-shaped normalization output for invalid workflow bytes" do
+    invalid_workflow_prompt =
+      IO.iodata_to_binary([
+        "Prefix ",
+        <<229, 191, 10>>,
+        " Suffix {{ issue.identifier }}"
+      ])
+
+    write_workflow_file!(Workflow.workflow_file_path(), prompt: invalid_workflow_prompt)
+
+    issue = %Issue{
+      identifier: "MT-UTF8-WORKFLOW",
+      title: "workflow bytes",
+      description: "workflow bytes",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-UTF8-WORKFLOW",
+      labels: []
+    }
+
+    prompt = PromptBuilder.build_prompt(issue, attempt: 2)
+
+    assert is_binary(prompt)
+    assert String.valid?(prompt)
+    refute match?({:error, _, _}, prompt)
+    assert prompt =~ "Prefix"
+    assert prompt =~ "Suffix MT-UTF8-WORKFLOW"
   end
 
   test "agent runner keeps workspace after successful codex run" do

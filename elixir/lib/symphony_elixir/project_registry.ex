@@ -7,23 +7,26 @@ defmodule SymphonyElixir.ProjectRegistry do
 
   @default_max_concurrent_agents 15
   @registry_file_name "project_registry.yaml"
-  @allowed_project_fields ~w(project_key enabled max_concurrent_agents)
+  @allowed_top_level_fields ~w(schema_version linear_token_relative_path projects)
+  @allowed_project_fields ~w(project_key display_name enabled max_concurrent_agents)
 
   @type raw_entry :: %{
           project_key: String.t(),
+          display_name: String.t(),
           enabled: boolean(),
           max_concurrent_agents: pos_integer() | nil
         }
 
   @type normalized_entry :: %{
           project_key: String.t(),
+          display_name: String.t() | nil,
           enabled: boolean(),
-          max_concurrent_agents: pos_integer(),
-          display_name: nil
+          max_concurrent_agents: pos_integer()
         }
 
   @type registry :: %{
           schema_version: 1,
+          linear_token_relative_path: String.t(),
           projects: [raw_entry()]
         }
 
@@ -139,9 +142,31 @@ defmodule SymphonyElixir.ProjectRegistry do
   end
 
   defp validate_registry(decoded) do
-    with {:ok, schema_version} <- validate_schema_version(Map.get(decoded, "schema_version")),
+    with :ok <- validate_allowed_top_level_fields(decoded),
+         {:ok, schema_version} <- validate_schema_version(Map.get(decoded, "schema_version")),
+         {:ok, linear_token_relative_path} <-
+           validate_linear_token_relative_path(Map.get(decoded, "linear_token_relative_path")),
          {:ok, projects} <- validate_projects(Map.get(decoded, "projects")) do
-      {:ok, %{schema_version: schema_version, projects: projects}}
+      {:ok,
+       %{
+         schema_version: schema_version,
+         linear_token_relative_path: linear_token_relative_path,
+         projects: projects
+       }}
+    end
+  end
+
+  defp validate_allowed_top_level_fields(decoded) when is_map(decoded) do
+    invalid_field =
+      decoded
+      |> Map.keys()
+      |> Enum.map(&to_string/1)
+      |> Enum.find(&(&1 not in @allowed_top_level_fields))
+
+    if invalid_field do
+      {:error, {:invalid_project_registry, "#{invalid_field} is not allowed"}}
+    else
+      :ok
     end
   end
 
@@ -149,6 +174,29 @@ defmodule SymphonyElixir.ProjectRegistry do
 
   defp validate_schema_version(_value) do
     {:error, {:invalid_project_registry, "schema_version must equal 1"}}
+  end
+
+  defp validate_linear_token_relative_path(value) when is_binary(value) do
+    trimmed = String.trim(value)
+
+    cond do
+      trimmed == "" ->
+        {:error, {:invalid_project_registry, "linear_token_relative_path must be a non-empty string"}}
+
+      Path.type(trimmed) == :absolute ->
+        {:error, {:invalid_project_registry, "linear_token_relative_path must be a relative path"}}
+
+      true ->
+        {:ok, trimmed}
+    end
+  end
+
+  defp validate_linear_token_relative_path(nil) do
+    {:error, {:invalid_project_registry, "linear_token_relative_path is required"}}
+  end
+
+  defp validate_linear_token_relative_path(_value) do
+    {:error, {:invalid_project_registry, "linear_token_relative_path must be a string"}}
   end
 
   defp validate_projects(projects) when is_list(projects) do
@@ -179,12 +227,14 @@ defmodule SymphonyElixir.ProjectRegistry do
 
     with :ok <- validate_allowed_project_fields(project, location),
          {:ok, project_key} <- validate_project_key(project, location),
+         {:ok, display_name} <- validate_display_name(project, location),
          {:ok, enabled} <- validate_enabled(project, location),
          {:ok, max_concurrent_agents} <- validate_max_concurrent_agents(project, location),
          :ok <- validate_unique_project_key(project_key, seen_keys) do
       {:ok,
        %{
          project_key: project_key,
+         display_name: display_name,
          enabled: enabled,
          max_concurrent_agents: max_concurrent_agents
        }, MapSet.put(seen_keys, project_key)}
@@ -228,6 +278,25 @@ defmodule SymphonyElixir.ProjectRegistry do
     end
   end
 
+  defp validate_display_name(project, location) do
+    case Map.fetch(project, "display_name") do
+      {:ok, value} when is_binary(value) ->
+        trimmed = String.trim(value)
+
+        if trimmed == "" do
+          {:error, {:invalid_project_registry, "#{location}.display_name must be a non-empty string"}}
+        else
+          {:ok, trimmed}
+        end
+
+      {:ok, _value} ->
+        {:error, {:invalid_project_registry, "#{location}.display_name must be a string"}}
+
+      :error ->
+        {:error, {:invalid_project_registry, "#{location}.display_name is required"}}
+    end
+  end
+
   defp validate_enabled(project, location) do
     case Map.fetch(project, "enabled") do
       {:ok, value} when is_boolean(value) ->
@@ -268,27 +337,13 @@ defmodule SymphonyElixir.ProjectRegistry do
   defp normalize_entry(entry) do
     %{
       project_key: entry.project_key,
+      display_name: entry.display_name,
       enabled: entry.enabled,
-      max_concurrent_agents: entry.max_concurrent_agents || @default_max_concurrent_agents,
-      display_name: nil
+      max_concurrent_agents: entry.max_concurrent_agents || @default_max_concurrent_agents
     }
   end
 
-  defp validate_legacy_bridge(%{projects: [_project]}, nil), do: :ok
-
-  defp validate_legacy_bridge(%{projects: [project]}, legacy_project_slug) do
-    if project.project_key == legacy_project_slug do
-      :ok
-    else
-      {:error, {:project_registry_conflict, %{legacy_project_slug: legacy_project_slug}}}
-    end
-  end
-
-  defp validate_legacy_bridge(%{projects: projects}, nil) when is_list(projects), do: :ok
-
-  defp validate_legacy_bridge(%{projects: projects}, legacy_project_slug) when is_list(projects) do
-    {:error, {:project_registry_conflict, %{legacy_project_slug: legacy_project_slug}}}
-  end
+  defp validate_legacy_bridge(%{projects: projects}, _legacy_project_slug) when is_list(projects), do: :ok
 
   @spec normalize_legacy_project_slug(term()) :: String.t() | nil
   def normalize_legacy_project_slug(value) when is_binary(value) do
@@ -307,9 +362,6 @@ defmodule SymphonyElixir.ProjectRegistry do
 
       {:error, reason} ->
         {:error, reason}
-
-      _ ->
-        {:ok, nil}
     end
   end
 

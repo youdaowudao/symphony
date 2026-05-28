@@ -48,6 +48,10 @@ status.txt
 .superpowers/
 .worktrees/
 .codex-review-*/
+test-results/
+tmp_*/
+playwright-report/
+.playwright-*/
 
 # Also ignore archive artifacts (built via "mix archive.build").
 *.ez

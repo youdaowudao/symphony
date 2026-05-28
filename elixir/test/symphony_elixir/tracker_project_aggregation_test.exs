@@ -140,4 +140,35 @@ defmodule SymphonyElixir.TrackerProjectAggregationTest do
              )
            )
   end
+
+  test "treats invalid fetch result shapes as project-scoped failures" do
+    projects = [
+      %{project_key: "project-a", enabled: true, max_concurrent_agents: 15},
+      %{project_key: "project-b", enabled: true, max_concurrent_agents: 15}
+    ]
+
+    fetcher = fn
+      "project-a" -> {:ok, :not_a_list}
+      "project-b" -> :unexpected
+    end
+
+    assert {:error, {:all_project_fetches_failed, project_results}} =
+             ProjectAggregation.aggregate(projects, fetcher)
+
+    assert Enum.any?(
+             project_results,
+             &match?(
+               %{project_key: "project-a", status: :failed, reason: {:invalid_project_fetch_result, :not_a_list}},
+               &1
+             )
+           )
+
+    assert Enum.any?(
+             project_results,
+             &match?(
+               %{project_key: "project-b", status: :failed, reason: {:invalid_project_fetch_result, :unexpected}},
+               &1
+             )
+           )
+  end
 end

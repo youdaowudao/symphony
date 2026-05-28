@@ -94,7 +94,7 @@ defmodule SymphonyElixir.Workspace.DispatchContext do
     |> String.replace(~r/[^a-zA-Z0-9]/, "")
     |> case do
       "" -> "issue"
-      normalized -> String.slice(normalized, -8, 8) || normalized
+      normalized -> String.slice(normalized, -8, 8)
     end
   end
 

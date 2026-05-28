@@ -3,6 +3,22 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
 
   alias SymphonyElixir.TestSupport.Snapshot
 
+  defmodule SnapshotPayloadOrchestrator do
+    use GenServer
+
+    def start_link(opts) do
+      snapshot = Keyword.fetch!(opts, :snapshot)
+      name = Keyword.get(opts, :name)
+      GenServer.start_link(__MODULE__, snapshot, name: name)
+    end
+
+    @impl true
+    def init(snapshot), do: {:ok, snapshot}
+
+    @impl true
+    def handle_call(:snapshot, _from, snapshot), do: {:reply, snapshot, snapshot}
+  end
+
   @terminal_columns 115
 
   test "snapshot fixture: idle dashboard" do
@@ -354,6 +370,90 @@ defmodule SymphonyElixir.StatusDashboardSnapshotTest do
     assert plain =~ "enabled 3 / active 2"
     assert plain =~ "ENG, OPS"
     assert plain =~ "Tracker: n/a"
+  end
+
+  test "live dashboard render path counts blocked-only projects in header summary" do
+    dashboard_name = Module.concat(__MODULE__, :BlockedProjectRenderDashboard)
+    parent = self()
+    orchestrator_pid = Process.whereis(SymphonyElixir.Orchestrator)
+
+    on_exit(fn ->
+      if is_nil(Process.whereis(SymphonyElixir.Orchestrator)) do
+        case Supervisor.restart_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator) do
+          {:ok, _pid} -> :ok
+          {:error, {:already_started, _pid}} -> :ok
+        end
+      end
+    end)
+
+    if is_pid(orchestrator_pid) do
+      assert :ok = Supervisor.terminate_child(SymphonyElixir.Supervisor, SymphonyElixir.Orchestrator)
+    end
+
+    snapshot = %{
+      projects: [
+        %{project_key: "ENG", project_display_name: "ENG", running_count: 1, retrying_count: 0, blocked_count: 0},
+        %{project_key: "OPS", project_display_name: "OPS", running_count: 0, retrying_count: 0, blocked_count: 1},
+        %{project_key: "ZERO", project_display_name: "ZERO", running_count: 0, retrying_count: 0, blocked_count: 0}
+      ],
+      running: [
+        running_entry(%{
+          project_key: "ENG",
+          issue_identifier: "ENG-101",
+          identifier: "ENG-101"
+        })
+      ],
+      retrying: [],
+      blocked: [
+        %{
+          issue_id: "blocked-1",
+          identifier: "MT-BLOCKED",
+          issue_identifier: "OPS-909",
+          project_key: "OPS",
+          state: "blocked",
+          session_id: "thread-blocked909",
+          blocked_at: ~U[2026-05-24 21:35:38Z],
+          error: "waiting for human input",
+          last_codex_event: :turn_input_required,
+          last_codex_timestamp: ~U[2026-05-24 21:36:38Z],
+          last_codex_message: %{
+            event: :notification,
+            message: %{"method" => "turn/input_required"}
+          }
+        }
+      ],
+      codex_totals: %{input_tokens: 0, output_tokens: 0, total_tokens: 0, seconds_running: 0},
+      rate_limits: nil
+    }
+
+    {:ok, _orchestrator_pid} =
+      start_supervised({SnapshotPayloadOrchestrator, name: SymphonyElixir.Orchestrator, snapshot: snapshot})
+
+    {:ok, dashboard_pid} =
+      StatusDashboard.start_link(
+        name: dashboard_name,
+        enabled: true,
+        refresh_ms: 60_000,
+        render_interval_ms: 16,
+        render_fun: fn content -> send(parent, {:render, content}) end
+      )
+
+    on_exit(fn ->
+      if Process.alive?(dashboard_pid) do
+        Process.exit(dashboard_pid, :normal)
+      end
+    end)
+
+    StatusDashboard.notify_update(dashboard_name)
+
+    assert_receive {:render, rendered}, 200
+
+    plain = Snapshot.strip_ansi(rendered)
+
+    assert plain =~ "Projects:"
+    assert plain =~ "enabled 3 / active 2"
+    assert plain =~ "ENG, OPS"
+    assert plain =~ "OPS/OPS-909"
   end
 
   test "running rows show compact project key and issue identifier" do

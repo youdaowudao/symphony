@@ -34,6 +34,9 @@ defmodule SymphonyElixir.TestSupport do
         ]
 
       setup do
+        previous_linear_api_token =
+          Application.get_env(:symphony_elixir, :linear_api_token, :__symphony_missing__)
+
         workflow_root =
           Path.join(
             System.tmp_dir!(),
@@ -46,6 +49,7 @@ defmodule SymphonyElixir.TestSupport do
         Workflow.set_workflow_file_path(workflow_file)
         if Process.whereis(SymphonyElixir.WorkflowStore), do: SymphonyElixir.WorkflowStore.force_reload()
         stop_default_http_server()
+        Application.put_env(:symphony_elixir, :linear_api_token, "test-linear-token")
 
         on_exit(fn ->
           Application.delete_env(:symphony_elixir, :workflow_file_path)
@@ -54,6 +58,15 @@ defmodule SymphonyElixir.TestSupport do
           Application.delete_env(:symphony_elixir, :project_aggregation_module)
           Application.delete_env(:symphony_elixir, :memory_tracker_issues)
           Application.delete_env(:symphony_elixir, :memory_tracker_recipient)
+
+          case previous_linear_api_token do
+            :__symphony_missing__ ->
+              Application.delete_env(:symphony_elixir, :linear_api_token)
+
+            value ->
+              Application.put_env(:symphony_elixir, :linear_api_token, value)
+          end
+
           File.rm_rf(workflow_root)
         end)
 
@@ -77,7 +90,7 @@ defmodule SymphonyElixir.TestSupport do
     :ok
   end
 
-  def write_project_registry_file!(path, registry \\ %{schema_version: 1, projects: []}) do
+  def write_project_registry_file!(path, registry \\ %{schema_version: 1, linear_token_relative_path: ".config/linear/linear_api_key.token", projects: []}) do
     content = project_registry_content(registry)
     File.write!(path, content)
     :ok
@@ -253,7 +266,18 @@ defmodule SymphonyElixir.TestSupport do
   defp project_registry_content(%{} = registry) do
     lines =
       []
-      |> maybe_append_registry_field("schema_version", Map.get(registry, :schema_version, Map.get(registry, "schema_version")))
+      |> maybe_append_registry_field(
+        "schema_version",
+        Map.get(registry, :schema_version, Map.get(registry, "schema_version"))
+      )
+      |> maybe_append_registry_field(
+        "linear_token_relative_path",
+        Map.get(
+          registry,
+          :linear_token_relative_path,
+          Map.get(registry, "linear_token_relative_path")
+        )
+      )
       |> maybe_append_projects_field(Map.get(registry, :projects, Map.get(registry, "projects", :missing)))
       |> Enum.reject(&is_nil/1)
 

@@ -13,6 +13,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @recovery_event_limit 20
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -39,6 +40,7 @@ defmodule SymphonyElixir.Orchestrator do
       claimed: MapSet.new(),
       blocked: %{},
       retry_attempts: %{},
+      recovery_events: [],
       codex_totals: nil,
       codex_rate_limits: nil,
       codex_rate_limits_observed_at_ms: nil,
@@ -323,7 +325,7 @@ defmodule SymphonyElixir.Orchestrator do
       choose_project_issues(project_result, state)
     else
       {:error, :missing_linear_api_token} ->
-        Logger.error("Linear API token missing in WORKFLOW.md")
+        Logger.error("Linear API token missing from project_registry.yaml token path bootstrap")
         state
 
       {:error, :missing_linear_project_slug} ->
@@ -823,7 +825,7 @@ defmodule SymphonyElixir.Orchestrator do
 
       %{
         project_key: project_key,
-        project_display_name: project_key,
+        project_display_name: entry.display_name || project_key,
         running_count: Enum.count(running, &(Map.get(&1, :project_key) == project_key)),
         retrying_count: Enum.count(retrying, &(Map.get(&1, :project_key) == project_key)),
         blocked_count: Enum.count(blocked, &(Map.get(&1, :project_key) == project_key))
@@ -832,7 +834,7 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp project_registry_entries do
-    case project_registry_module().normalized_entries() do
+    case canonical_project_registry_entries() do
       {:ok, entries} when is_list(entries) -> entries
       _ -> []
     end
@@ -1811,7 +1813,8 @@ defmodule SymphonyElixir.Orchestrator do
     case project_limit_from_registry(metadata[:project_key]) do
       {:ok, project_limit} ->
         if active_retry_dispatch_ready?(state, issue, metadata, project_limit) do
-          {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host], metadata[:project_key])}
+          recovered_state = maybe_record_recovery_event(state, issue, runtime_key, attempt, metadata)
+          {:noreply, dispatch_issue(recovered_state, issue, attempt, metadata[:worker_host], metadata[:project_key])}
         else
           Logger.debug("Retry remains queued for #{issue_context(issue)}; dispatch gate not open yet")
 
@@ -1938,16 +1941,13 @@ defmodule SymphonyElixir.Orchestrator do
       [runtime_key] ->
         runtime_key
 
-      runtime_keys when is_list(runtime_keys) ->
+      runtime_keys ->
         runtime_keys
         |> Enum.find(fn runtime_key ->
           running
           |> Map.get(runtime_key, %{})
           |> running_entry_matches_update?(update)
         end)
-
-      _ ->
-        nil
     end
   end
 
@@ -2044,8 +2044,6 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp matching_runtime_keys(container, issue_id), do: matching_runtime_keys(container, issue_id, nil)
 
-  defp matching_runtime_keys(container, issue_id, project_key)
-
   defp matching_runtime_keys(container, issue_id, project_key) when is_binary(issue_id) do
     if is_map(container) do
       container
@@ -2058,8 +2056,6 @@ defmodule SymphonyElixir.Orchestrator do
       []
     end
   end
-
-  defp matching_runtime_keys(_container, _issue_id, _project_key), do: []
 
   defp reconcile_runtime_keys(container, issue_id, project_key) when is_binary(issue_id) do
     if stable_project_key?(project_key) do
@@ -2157,7 +2153,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp project_limit_from_registry(project_key) when is_binary(project_key) do
     with true <- stable_project_key?(project_key),
-         {:ok, entries} <- project_registry_module().normalized_entries(),
+         {:ok, entries} <- canonical_project_registry_entries(),
          %{enabled: true, max_concurrent_agents: project_limit} <-
            Enum.find(entries, &(&1.project_key == project_key)),
          true <- valid_project_limit?(project_limit) do
@@ -2171,6 +2167,10 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp project_limit_from_registry(_project_key), do: {:error, :invalid_project_key}
+
+  defp canonical_project_registry_entries do
+    project_registry_module().normalized_entries()
+  end
 
   defp maybe_put_runtime_value(running_entry, _key, nil), do: running_entry
 
@@ -2283,6 +2283,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec clear_recovery_events() :: :ok | :unavailable
+  def clear_recovery_events do
+    clear_recovery_events(__MODULE__)
+  end
+
+  @spec clear_recovery_events(GenServer.server()) :: :ok | :unavailable
+  def clear_recovery_events(server) do
+    if Process.whereis(server) do
+      GenServer.call(server, :clear_recovery_events)
+    else
+      :unavailable
+    end
+  end
+
   @spec snapshot() :: map() | :timeout | :unavailable
   def snapshot, do: snapshot(__MODULE__, 15_000)
 
@@ -2317,6 +2331,7 @@ defmodule SymphonyElixir.Orchestrator do
           state: metadata.issue.state,
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
+          attempt: Map.get(metadata, :attempt, Map.get(metadata, :retry_attempt)),
           session_id: metadata.session_id,
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
@@ -2360,6 +2375,7 @@ defmodule SymphonyElixir.Orchestrator do
        running: running,
        retrying: retrying,
        blocked: blocked,
+       recovery_events: Enum.take(state.recovery_events, @recovery_event_limit),
        projects: snapshot_projects(running, retrying, blocked),
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
@@ -2384,6 +2400,10 @@ defmodule SymphonyElixir.Orchestrator do
        requested_at: DateTime.utc_now(),
        operations: ["poll", "reconcile"]
      }, state}
+  end
+
+  def handle_call(:clear_recovery_events, _from, state) do
+    {:reply, :ok, %{state | recovery_events: []}}
   end
 
   defp blocked_issue_state(%{issue: %Issue{state: state}}), do: state
@@ -2774,8 +2794,6 @@ defmodule SymphonyElixir.Orchestrator do
     not codex_rate_limit_active?(state)
   end
 
-  defp codex_dispatch_allowed?(_state), do: true
-
   defp codex_rate_limit_active?(%State{} = state) do
     rate_limits = Map.get(state, :codex_rate_limits)
     observed_at_ms = Map.get(state, :codex_rate_limits_observed_at_ms)
@@ -2839,8 +2857,6 @@ defmodule SymphonyElixir.Orchestrator do
     |> parse_integer_like()
   end
 
-  defp reset_in_seconds(_bucket), do: nil
-
   defp parse_integer_like(value) when is_integer(value), do: value
 
   defp parse_integer_like(value) when is_binary(value) do
@@ -2892,8 +2908,6 @@ defmodule SymphonyElixir.Orchestrator do
         false
     end
   end
-
-  defp worker_host_backoff_active?(_state, _worker_host), do: false
 
   defp worker_host_failure?(worker_host, running_entry, reason) when is_binary(worker_host) do
     startup_failed? =
@@ -3033,6 +3047,32 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp normalize_retry_attempt(attempt, _previous_retry) when is_integer(attempt), do: attempt
   defp normalize_retry_attempt(_attempt, previous_retry), do: previous_retry.attempt + 1
+
+  defp maybe_record_recovery_event(%State{} = state, %Issue{} = issue, runtime_key, attempt, metadata) do
+    recovery_attempt_count =
+      metadata[:attempt] ||
+        metadata[:last_attempt] ||
+        attempt ||
+        0
+
+    if recovery_attempt_count > 0 do
+      record_recovery_event(state, %{
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+        project_key: metadata[:project_key] || runtime_project_key(runtime_key),
+        recovery_attempt_count: recovery_attempt_count,
+        last_event_at: DateTime.utc_now(),
+        last_message: metadata[:error],
+        session_id: nil
+      })
+    else
+      state
+    end
+  end
+
+  defp record_recovery_event(%State{} = state, event) when is_map(event) do
+    %{state | recovery_events: [event | Enum.take(state.recovery_events, @recovery_event_limit - 1)]}
+  end
 
   defp cancel_retry_timer(timer_ref) when is_reference(timer_ref) do
     Process.cancel_timer(timer_ref)

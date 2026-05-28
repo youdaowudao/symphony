@@ -531,7 +531,8 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert state_payload == %{
              "generated_at" => state_payload["generated_at"],
-             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1},
+             "counts" => %{"running" => 1, "retrying" => 1, "blocked" => 1, "stale" => 0, "pending" => 2},
+             "polling" => %{},
              "projects" => [
                %{
                  "project_key" => "project-a",
@@ -554,6 +555,7 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "project_display_name" => "project-a",
                  "issue_id" => "issue-http",
                  "issue_identifier" => "MT-HTTP",
+                 "attempt" => 0,
                  "state" => "In Progress",
                  "runtime_status" => "running",
                  "worker_host" => nil,
@@ -562,25 +564,27 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "turn_count" => 7,
                  "last_event" => "notification",
                  "last_message" => "rendered",
+                 "summary_text" => "rendered",
                  "started_at" => state_payload["running"] |> List.first() |> Map.fetch!("started_at"),
                  "last_event_at" => state_payload["running"] |> List.first() |> Map.fetch!("last_event_at"),
                  "tokens" => %{"input_tokens" => 4, "output_tokens" => 8, "total_tokens" => 12}
                }
              ],
+             "recovery_events" => [],
              "retrying" => [
                %{
                  "project_key" => "project-a",
                  "project_display_name" => "project-a",
                  "issue_id" => "issue-retry",
                  "issue_identifier" => "MT-RETRY",
-                  "attempt" => 2,
-                  "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
-                  "last_event_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("last_event_at"),
-                  "error" => "boom",
-                  "worker_host" => "dm-dev2",
-                  "workspace_path" => "/workspaces/project-a/MT-RETRY"
-                }
-              ],
+                 "attempt" => 2,
+                 "due_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("due_at"),
+                 "last_event_at" => state_payload["retrying"] |> List.first() |> Map.fetch!("last_event_at"),
+                 "error" => "boom",
+                 "worker_host" => "dm-dev2",
+                 "workspace_path" => "/workspaces/project-a/MT-RETRY"
+               }
+             ],
              "blocked" => [
                %{
                  "project_key" => "project-a",
@@ -720,8 +724,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert json_response(conn, 409) == %{
              "error" => %{
                "code" => "project_scope_required",
-               "message" =>
-                 "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"
+               "message" => "Issue identifier matches multiple projects; use /api/v1/projects/:project_key/issues/:issue_identifier"
              }
            }
 
@@ -765,8 +768,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert json_response(conn, 409) == %{
              "error" => %{
                "code" => "project_scope_required",
-               "message" =>
-                 "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+               "message" => "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
              }
            }
 
@@ -822,8 +824,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert json_response(conn, 409) == %{
              "error" => %{
                "code" => "project_scope_required",
-               "message" =>
-                 "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
+               "message" => "Issue identifier matches one or more entries without stable project scope; use /api/v1/projects/:project_key/issues/:issue_identifier"
              }
            }
 
@@ -910,9 +911,11 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     dashboard_css = response(get(build_conn(), "/dashboard.css"), 200)
     assert dashboard_css =~ ":root {"
-    assert dashboard_css =~ ".status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-live"
-    assert dashboard_css =~ "[data-phx-main].phx-connected .status-badge-offline"
+    assert dashboard_css =~ ".dashboard-shell {"
+    assert dashboard_css =~ ".meta-chip.warn {"
+    assert dashboard_css =~ ".main-grid {"
+    assert dashboard_css =~ ".running-rows {"
+    assert dashboard_css =~ ".copy-chip {"
 
     phoenix_html_js = response(get(build_conn(), "/vendor/phoenix_html/phoenix_html.js"), 200)
     assert phoenix_html_js =~ "phoenix.link.click"
@@ -945,28 +948,31 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
     {:ok, view, html} = live(build_conn(), "/")
-    assert html =~ "Operations Dashboard"
+    assert html =~ "Multi-Project Operations Home"
+    assert html =~ "多项目共享执行池"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
     assert html =~ "MT-BLOCKED"
     assert html =~ "rendered"
-    assert html =~ "Current exceptions"
+    assert html =~ "当前异常"
     assert html =~ "codex turn requires operator input"
-    assert html =~ "waiting_input"
+    assert html =~ "boom"
+    assert html =~ "thread-blocked"
     assert html =~ "Runtime"
-    assert html =~ "Live"
-    assert html =~ "Offline"
-    assert html =~ "Copy ID"
+    assert html =~ "最近恢复事件"
+    assert html =~ "copy session"
+    assert html =~ "copy session 仅在 running 行可用"
     assert html =~ "Projects"
-    assert html =~ "todo pool / blocked-by"
+    assert html =~ "Todo Pool"
+    assert html =~ "待执行任务池占位"
     assert html =~ "project-a"
-    assert html =~ "/api/v1/projects/project-a/issues/MT-HTTP"
+    assert html =~ "project-b"
     refute html =~ "data-runtime-clock="
     refute html =~ "setInterval(refreshRuntimeClocks"
     refute html =~ "Refresh now"
     refute html =~ "Transport"
-    assert html =~ "status-badge-live"
-    assert html =~ "status-badge-offline"
+    assert html =~ ~s(id="current-exceptions-list")
+    assert html =~ ~s(id="running-list")
 
     updated_snapshot =
       put_in(snapshot.running, [
@@ -1054,7 +1060,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     response = Req.get!("http://127.0.0.1:#{port}/api/v1/state")
     assert response.status == 200
-    assert response.body["counts"] == %{"running" => 1, "retrying" => 1, "blocked" => 1}
+
+    assert response.body["counts"] == %{
+             "running" => 1,
+             "retrying" => 1,
+             "blocked" => 1,
+             "stale" => 0,
+             "pending" => 2
+           }
 
     dashboard_css = Req.get!("http://127.0.0.1:#{port}/dashboard.css")
     assert dashboard_css.status == 200

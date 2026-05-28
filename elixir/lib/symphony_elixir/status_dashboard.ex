@@ -318,19 +318,11 @@ defmodule SymphonyElixir.StatusDashboard do
 
   defp snapshot_with_samples(token_samples, now_ms) do
     case snapshot_payload() do
-      {:ok, %{running: running, retrying: retrying, codex_totals: codex_totals} = snapshot} ->
+      {:ok, %{codex_totals: codex_totals} = snapshot} ->
         total_tokens = Map.get(codex_totals, :total_tokens, 0)
 
         {
-          {:ok,
-           %{
-             running: running,
-             retrying: retrying,
-             projects: Map.get(snapshot, :projects, []),
-             codex_totals: codex_totals,
-             rate_limits: Map.get(snapshot, :rate_limits),
-             polling: Map.get(snapshot, :polling)
-           }},
+          {:ok, snapshot},
           update_token_samples(token_samples, now_ms, total_tokens)
         }
 
@@ -594,31 +586,47 @@ defmodule SymphonyElixir.StatusDashboard do
     do: dashboard_url(host, configured_port, bound_port)
 
   defp snapshot_payload do
-    if Process.whereis(Orchestrator) do
-      case Orchestrator.snapshot() do
-        %{
-          running: running,
-          retrying: retrying,
-          codex_totals: codex_totals
-        } = snapshot
-        when is_list(running) and is_list(retrying) ->
-          {:ok,
-        %{
-          running: running,
-          retrying: retrying,
-          blocked: Map.get(snapshot, :blocked, []),
-          codex_totals: codex_totals,
-          rate_limits: Map.get(snapshot, :rate_limits),
-          polling: Map.get(snapshot, :polling)
-           }}
+    snapshot_payload(Orchestrator)
+  end
 
-        _ ->
-          :error
-      end
+  defp snapshot_payload(orchestrator_server) do
+    if orchestrator_available?(orchestrator_server) do
+      orchestrator_server
+      |> Orchestrator.snapshot(15_000)
+      |> normalize_snapshot_payload()
     else
       :error
     end
   end
+
+  defp orchestrator_available?(server) do
+    case GenServer.whereis(server) do
+      pid when is_pid(pid) -> Process.alive?(pid)
+      _ -> false
+    end
+  end
+
+  defp normalize_snapshot_payload(
+         %{
+           running: running,
+           retrying: retrying,
+           codex_totals: codex_totals
+         } = snapshot
+       )
+       when is_list(running) and is_list(retrying) do
+    {:ok,
+     %{
+       running: running,
+       retrying: retrying,
+       blocked: Map.get(snapshot, :blocked, []),
+       projects: Map.get(snapshot, :projects, []),
+       codex_totals: codex_totals,
+       rate_limits: Map.get(snapshot, :rate_limits),
+       polling: Map.get(snapshot, :polling)
+     }}
+  end
+
+  defp normalize_snapshot_payload(_snapshot), do: :error
 
   defp format_running_rows(running, terminal_columns_override, now) do
     if running == [] do
@@ -728,13 +736,13 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp blocked_reason(blocked_entry, terminal_columns_override) do
-    base =
-      cond do
-        is_binary(Map.get(blocked_entry, :error)) and String.trim(Map.get(blocked_entry, :error)) != "" ->
-          Map.get(blocked_entry, :error)
+    error = Map.get(blocked_entry, :error)
 
-        true ->
-          summarize_message(Map.get(blocked_entry, :last_codex_message))
+    base =
+      if is_binary(error) and String.trim(error) != "" do
+        error
+      else
+        summarize_message(Map.get(blocked_entry, :last_codex_message))
       end
 
     width = max(20, (terminal_columns_override || terminal_columns()) - 38)
@@ -1003,35 +1011,31 @@ defmodule SymphonyElixir.StatusDashboard do
   end
 
   defp compact_issue_label(entry) when is_map(entry) do
-    project_key = Map.get(entry, :project_key)
-    issue_identifier = Map.get(entry, :issue_identifier)
-    identifier = Map.get(entry, :identifier)
-    issue_id = Map.get(entry, :issue_id)
+    project_key = present_string(Map.get(entry, :project_key))
+    issue_identifier = present_string(Map.get(entry, :issue_identifier))
+    identifier = present_string(Map.get(entry, :identifier))
+    issue_id = present_string(Map.get(entry, :issue_id))
 
     cond do
-      is_binary(project_key) and String.trim(project_key) != "" and
-          is_binary(issue_identifier) and String.trim(issue_identifier) != "" ->
-        "#{String.trim(project_key)}/#{String.trim(issue_identifier)}"
-
-      is_binary(project_key) and String.trim(project_key) != "" and
-          is_binary(identifier) and String.trim(identifier) != "" ->
-        "#{String.trim(project_key)}/#{String.trim(identifier)}"
-
-      is_binary(issue_identifier) and String.trim(issue_identifier) != "" ->
-        String.trim(issue_identifier)
-
-      is_binary(identifier) and String.trim(identifier) != "" ->
-        String.trim(identifier)
-
-      is_binary(issue_id) and String.trim(issue_id) != "" ->
-        String.trim(issue_id)
-
-      true ->
-        "unknown"
+      project_key && issue_identifier -> "#{project_key}/#{issue_identifier}"
+      project_key && identifier -> "#{project_key}/#{identifier}"
+      issue_identifier -> issue_identifier
+      identifier -> identifier
+      issue_id -> issue_id
+      true -> "unknown"
     end
   end
 
   defp compact_issue_label(_entry), do: "unknown"
+
+  defp present_string(value) when is_binary(value) do
+    case String.trim(value) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp present_string(_value), do: nil
 
   defp group_thousands(value) when is_binary(value) do
     sign = if String.starts_with?(value, "-"), do: "-", else: ""

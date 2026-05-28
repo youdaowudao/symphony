@@ -44,6 +44,8 @@ defmodule SymphonyElixir.LinearClientTest do
   end
 
   test "production project-aware fetch returns missing token before assignee resolution" do
+    Application.delete_env(:symphony_elixir, :linear_api_token)
+
     write_workflow_file!(
       Workflow.workflow_file_path(),
       tracker_project_slug: "legacy-project",
@@ -56,6 +58,8 @@ defmodule SymphonyElixir.LinearClientTest do
   end
 
   test "production project-aware fetch returns empty list when no states are requested" do
+    Application.delete_env(:symphony_elixir, :linear_api_token)
+
     write_workflow_file!(
       Workflow.workflow_file_path(),
       tracker_project_slug: "legacy-project",

@@ -302,6 +302,15 @@ defmodule SymphonyElixir.Codex.AppServer do
   end
 
   defp start_turn(port, thread_id, prompt, issue, workspace, approval_policy, turn_sandbox_policy) do
+    prompt =
+      case prompt do
+        value when is_binary(value) ->
+          value
+
+        other ->
+          raise ArgumentError, "turn prompt must be a binary, got: #{inspect(other)}"
+      end
+
     send_message(port, %{
       "method" => "turn/start",
       "id" => @turn_start_id,
