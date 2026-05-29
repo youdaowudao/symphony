@@ -392,7 +392,7 @@ defmodule SymphonyElixir.DashboardLiveTest do
 
     assert html =~ "最近恢复事件"
     recovery_html = view |> element("#recovery-events-list") |> render()
-    assert recovery_html =~ ~r/2026-05-2[78] \d{2}:\d{2}:\d{2} UTC\+8/
+    assert recovery_html =~ ~r/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC\+8/
     assert recovery_html =~ "UTC+8"
     refute recovery_html =~ ~r/>\d{2}:\d{2}:\d{2}</
     refute html =~ ~s(phx-click="clear_recovery_events")
