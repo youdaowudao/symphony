@@ -2,6 +2,18 @@
 
 这里记录仓库已经合入或已完成待提交的主要变化，方便后续快速了解每个 PR 或本地收口改动大致做了什么。它不是硬性流程门禁，也不替代 PR、Linear 或详细设计文档。
 
+## 2026-05-28
+
+### 本地完成，待文档复核：V0.2 全自动流转阶段规划草案
+
+- 已完成：新增 `docs/initiatives/stage-plans/v0.2/README.md`，作为 V0.2 阶段规划入口。
+- 已完成：新增 `01_AI_Review驱动的Issue生命周期流转.md`，固定 V0.2 主流程：`AI Review`、项目级 `review_mode`、Submission Refresh Gate、AI Review Gate、review worktree、Linear 人类评论优先级和 merge 前刷新。
+- 已完成：新增 `02_Todo_Pool人工检查功能.md`，把 `Todo Pool` 固定为首页只读人工检查区，不参与调度、不写 Linear。
+- 已完成：新增 `03_项目级健康检查与安全恢复.md`，固定全局 / 项目级健康检查边界和安全恢复动作。
+- 已完成：新增 `docs/initiatives/SPEC/03_Symphony_V0.2全自动流转长期SPEC.md`，把 V0.2 已确认的长期合同上提到长期 SPEC。
+- 已完成：新增 `docs/initiatives/global-planning/03_Symphony_V0.2阶段变化与路线.md`，说明 V0.2 相对 V0.1 的阶段变化。
+- 已完成：按 `elixir/PLANNING_FLOW.md` 对这批规划文档做 Level 3 零上下文复核，并按复核结果修订，统一了 `review_mode` 可在提交前调整、Linear 人类评论优先、`review_attempt_limit` 与 `repeat_count` 语义分离等边界。
+
 ## 2026-05-25
 
 ### 本地完成，待提交：V0.11 项目登记表与配置治理

@@ -9,3 +9,8 @@
 3. 当前还在讨论中的主题建议单独开子目录，并在子目录里保留一个入口 README 作为唯一索引。
 
 当前初始化阶段先保留入口，后续再按阶段补充。
+
+当前阶段工作区：
+
+1. [multi-project-shared-execution-pool/](./multi-project-shared-execution-pool/)：多项目共享执行池 V0.1 讨论与规划材料。
+2. [v0.2/](./v0.2/)：V0.2 全自动流转、Todo Pool 和健康检查规划材料。
